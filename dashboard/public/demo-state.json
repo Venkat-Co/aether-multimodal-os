@@ -1,0 +1,112 @@
+{
+  "generated_at": "2026-04-21T19:15:00Z",
+  "status": "demo",
+  "streams": [
+    {
+      "source_id": "camera_assembly_03",
+      "modality": "vision",
+      "timestamp": "2026-04-21T19:14:52Z",
+      "raw_data": {
+        "objects": ["operator", "assembly_line", "thermal_gauge"]
+      }
+    },
+    {
+      "source_id": "mic_floor_ops",
+      "modality": "audio",
+      "timestamp": "2026-04-21T19:14:49Z",
+      "raw_data": {
+        "transcript": "Operator reports rising vibration near assembly line three."
+      }
+    },
+    {
+      "source_id": "sensor_line_03",
+      "modality": "sensor",
+      "timestamp": "2026-04-21T19:14:54Z",
+      "raw_data": {
+        "temperature_c": 91.4,
+        "vibration_g": 1.42,
+        "pressure_kpa": 224.0
+      }
+    },
+    {
+      "source_id": "ops_log_alpha",
+      "modality": "text",
+      "timestamp": "2026-04-21T19:14:47Z",
+      "raw_data": {
+        "message": "Maintenance history shows recurring thermal drift on the same cell."
+      }
+    }
+  ],
+  "fusion": [
+    {
+      "event_id": "evt_pages_demo_01",
+      "timestamp": "2026-04-21T19:14:55Z",
+      "confidence": 0.93,
+      "modalities": ["vision", "audio", "sensor", "text"],
+      "semantic_summary": "Assembly cell 3 shows thermal escalation, correlated vibration growth, and operator concern."
+    }
+  ],
+  "alerts": [
+    {
+      "decision_id": "gov_pages_demo_01",
+      "timestamp": "2026-04-21T19:14:58Z",
+      "rule_id": "SAFETY_004",
+      "action_taken": "MONITOR",
+      "risk_level": "MEDIUM",
+      "reasoning": "Confidence remains acceptable, but the anomaly pattern merits elevated monitoring and human review.",
+      "confidence": 0.88
+    }
+  ],
+  "reasoning": [
+    {
+      "reasoning_id": "rsn_pages_demo_01",
+      "timestamp": "2026-04-21T19:14:57Z",
+      "mode": "proactive",
+      "summary": "Proactive trigger fired based on compounding temperature, vibration, and maintenance recurrence signals.",
+      "confidence": 0.9,
+      "predictions": [
+        {
+          "horizon_minutes": 15,
+          "forecast": "Thermal envelope likely exceeds operator threshold if load remains unchanged."
+        }
+      ],
+      "action_plan": [
+        {
+          "action_type": "notify",
+          "target": "shift_supervisor"
+        }
+      ]
+    }
+  ],
+  "memory_updates": [
+    {
+      "node_id": "mem_pages_demo_01",
+      "memory_type": "working",
+      "timestamp": "2026-04-21T19:14:56Z",
+      "content": {
+        "event_type": "fused_event",
+        "description": "Line 3 multimodal anomaly consolidated into working memory.",
+        "query": "Assess whether thermal instability is likely to intensify over the next quarter hour.",
+        "reasoning_state": {
+          "temperature_c": 91.4,
+          "vibration_g": 1.42
+        }
+      }
+    }
+  ],
+  "latest_action": {
+    "decision": {
+      "timestamp": "2026-04-21T19:14:58Z",
+      "rule_id": "SAFETY_004",
+      "action_taken": "MONITOR",
+      "reasoning": "Governance permits observation and escalation without blocking the operator loop."
+    },
+    "result": {
+      "timestamp": "2026-04-21T19:14:59Z",
+      "status": "dispatched",
+      "target": "shift_supervisor",
+      "action_type": "notify",
+      "detail": "Supervisor notification enqueued with anomaly summary and projected thermal drift."
+    }
+  }
+}

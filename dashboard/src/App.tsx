@@ -199,6 +199,9 @@ function toneForSocketStatus(socketStatus: string): Tone {
   if (socketStatus === "online") {
     return "mint";
   }
+  if (socketStatus === "demo") {
+    return "cyan";
+  }
   if (socketStatus === "degraded" || socketStatus === "connecting") {
     return "amber";
   }
@@ -440,37 +443,96 @@ function buildActivityTimeline(state: DashboardState, nowMs: number): ActivityMo
   return items.sort((left, right) => right.sortKey - left.sortKey).slice(0, 8);
 }
 
+function normalizeSocketBase(value: string): string {
+  return value.replace(/\/+$/, "");
+}
+
+function resolveSocketBase(): string | undefined {
+  const params = new URLSearchParams(window.location.search);
+  const queryValue = params.get("ws");
+  if (queryValue && queryValue.trim().length > 0) {
+    return normalizeSocketBase(queryValue.trim());
+  }
+
+  const envValue = import.meta.env.VITE_WS_URL;
+  if (typeof envValue === "string" && envValue.trim().length > 0) {
+    return normalizeSocketBase(envValue.trim());
+  }
+
+  return undefined;
+}
+
+function prefersStaticDemo(): boolean {
+  return window.location.hostname.endsWith("github.io");
+}
+
 function useDashboardState() {
   const [state, setState] = useState<DashboardState>(initialState);
   const [socketStatus, setSocketStatus] = useState("connecting");
   const [nowMs, setNowMs] = useState(Date.now());
 
   useEffect(() => {
-    const wsBase = import.meta.env.VITE_WS_URL ?? "ws://localhost:8007";
-    const socket = new WebSocket(`${wsBase}/ws/dashboard/state`);
+    const wsBase = resolveSocketBase();
+    const useStaticDemo = prefersStaticDemo() && !wsBase;
+    let socket: WebSocket | undefined;
+    let disposed = false;
 
-    socket.addEventListener("open", () => setSocketStatus("online"));
-    socket.addEventListener("close", () => setSocketStatus("offline"));
-    socket.addEventListener("error", () => setSocketStatus("degraded"));
-    socket.addEventListener("message", (event) => {
+    async function loadDemoState() {
       try {
-        const payload = JSON.parse(event.data) as DashboardState;
-        setState(payload);
+        const response = await fetch(`${import.meta.env.BASE_URL}demo-state.json`, { cache: "no-store" });
+        if (!response.ok) {
+          throw new Error("demo-state-unavailable");
+        }
+
+        const payload = (await response.json()) as DashboardState;
+        if (!disposed) {
+          setState(payload);
+          setSocketStatus("demo");
+        }
       } catch {
-        setSocketStatus("degraded");
+        if (!disposed) {
+          setSocketStatus("offline");
+        }
       }
-    });
+    }
+
+    if (useStaticDemo) {
+      void loadDemoState();
+    } else if (wsBase) {
+      socket = new WebSocket(`${wsBase}/ws/dashboard/state`);
+
+      socket.addEventListener("open", () => setSocketStatus("online"));
+      socket.addEventListener("close", () => {
+        if (prefersStaticDemo()) {
+          void loadDemoState();
+          return;
+        }
+        setSocketStatus("offline");
+      });
+      socket.addEventListener("error", () => setSocketStatus(prefersStaticDemo() ? "demo" : "degraded"));
+      socket.addEventListener("message", (event) => {
+        try {
+          const payload = JSON.parse(event.data) as DashboardState;
+          setState(payload);
+        } catch {
+          setSocketStatus("degraded");
+        }
+      });
+    } else {
+      setSocketStatus("offline");
+    }
 
     const heartbeat = window.setInterval(() => {
       setNowMs(Date.now());
-      if (socket.readyState === WebSocket.OPEN) {
+      if (socket?.readyState === WebSocket.OPEN) {
         socket.send("pulse");
       }
     }, 1000);
 
     return () => {
+      disposed = true;
       window.clearInterval(heartbeat);
-      socket.close();
+      socket?.close();
     };
   }, []);
 

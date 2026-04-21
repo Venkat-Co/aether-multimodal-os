@@ -69,3 +69,11 @@ It is intentionally structured so production integrations like Kafka, Redis Stre
 - `make demo` runs the kernel demo endpoint and prints the JSON result.
 - `make logs` tails the compose logs.
 - `make stop` shuts the stack down.
+
+## GitHub Pages
+
+- The repository now includes `.github/workflows/pages.yml` to publish the dashboard to GitHub Pages on every push to `main`.
+- Because GitHub Pages is a static host, it can publish the premium dashboard shell but not the Python microservices, Redis, Kafka, Neo4j, or realtime WebSocket backend. The public Pages site therefore runs in a curated demo mode unless you point it at an external realtime endpoint.
+- Once Pages is enabled for the repository, the default project-site URL will be `https://venkat-co.github.io/aether-multimodal-os/`.
+- If you later host the realtime service somewhere else, you can override the dashboard socket target with a query parameter:
+  - `https://venkat-co.github.io/aether-multimodal-os/?ws=wss://your-realtime-host`

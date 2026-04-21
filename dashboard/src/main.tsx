@@ -5,7 +5,8 @@ import "./styles.css";
 
 if ("serviceWorker" in navigator) {
   window.addEventListener("load", () => {
-    navigator.serviceWorker.register("/service-worker.js").catch(() => {
+    const serviceWorkerUrl = `${import.meta.env.BASE_URL}service-worker.js`;
+    navigator.serviceWorker.register(serviceWorkerUrl, { scope: import.meta.env.BASE_URL }).catch(() => {
       // Offline support should not block the UI boot path.
     });
   });
@@ -16,4 +17,3 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
     <App />
   </React.StrictMode>,
 );
-

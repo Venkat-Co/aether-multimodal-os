@@ -1,9 +1,17 @@
 const CACHE_NAME = "aether-shell-v2";
-const APP_SHELL = ["/manifest.webmanifest"];
+
+function basePath() {
+  return new URL(self.registration.scope).pathname;
+}
+
+function assetPath(pathname) {
+  return new URL(pathname, self.registration.scope).pathname;
+}
 
 self.addEventListener("install", (event) => {
+  const appShell = [assetPath("manifest.webmanifest")];
   event.waitUntil(
-    caches.open(CACHE_NAME).then((cache) => cache.addAll(APP_SHELL)).then(() => self.skipWaiting()),
+    caches.open(CACHE_NAME).then((cache) => cache.addAll(appShell)).then(() => self.skipWaiting()),
   );
 });
 
@@ -22,7 +30,13 @@ self.addEventListener("fetch", (event) => {
   }
 
   const requestUrl = new URL(event.request.url);
-  const isDocumentRequest = event.request.mode === "navigate" || requestUrl.pathname === "/";
+  const rootPath = basePath();
+  const manifestPath = assetPath("manifest.webmanifest");
+  const assetsPath = assetPath("assets/");
+  const isDocumentRequest =
+    event.request.mode === "navigate" ||
+    requestUrl.pathname === rootPath ||
+    requestUrl.pathname === `${rootPath}index.html`;
 
   if (isDocumentRequest) {
     event.respondWith(
@@ -33,7 +47,7 @@ self.addEventListener("fetch", (event) => {
     return;
   }
 
-  if (requestUrl.pathname.startsWith("/assets/") || requestUrl.pathname === "/manifest.webmanifest") {
+  if (requestUrl.pathname.startsWith(assetsPath) || requestUrl.pathname === manifestPath) {
     event.respondWith(
       caches.match(event.request).then((cached) => {
         if (cached) {
