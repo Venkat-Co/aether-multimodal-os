@@ -32,6 +32,8 @@ class BroadcastHub:
             "alerts": [],
             "reasoning": [],
             "memory_updates": [],
+            "agents": [],
+            "agent_runs": [],
         }
         self._lock = asyncio.Lock()
 
@@ -44,6 +46,13 @@ class BroadcastHub:
         async with self._lock:
             self.subscribers[topic].discard(websocket)
 
+    async def _send(self, topic: str, payload: dict[str, Any]) -> None:
+        for websocket in list(self.subscribers[topic]):
+            try:
+                await websocket.send_json(payload)
+            except RuntimeError:
+                self.subscribers[topic].discard(websocket)
+
     async def publish(self, topic: str, message: dict[str, Any]) -> None:
         self.state["generated_at"] = datetime.now(tz=UTC).isoformat()
         if topic == "dashboard":
@@ -53,11 +62,12 @@ class BroadcastHub:
             if key in self.state and isinstance(self.state[key], list):
                 self.state[key].append(message)
                 self.state[key] = self.state[key][-100:]
-        for websocket in list(self.subscribers[topic]):
-            try:
-                await websocket.send_json(message)
-            except RuntimeError:
-                self.subscribers[topic].discard(websocket)
+        if topic == "dashboard":
+            await self._send("dashboard", self.state)
+            return
+
+        await self._send(topic, message)
+        await self._send("dashboard", self.state)
 
 
 hub = BroadcastHub()

@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import UTC, datetime
 from typing import Any
 
 from aether_core.event_bus import EventBus
 from aether_core.vector import deterministic_embedding
 
 from .clients import AetherServiceClients
-from .models import KernelPipelineRequest, KernelPipelineResult
+from .models import AgentDefinition, AgentRunRequest, AgentRunResult, KernelPipelineRequest, KernelPipelineResult
+from .registry import AgentRegistry, build_run_result
 
 
 class KernelOrchestrator:
@@ -207,3 +209,37 @@ class KernelOrchestrator:
             governance_decision=governance_decision,
             action_result=action_result,
         )
+
+    async def run_agent(
+        self, registry: AgentRegistry, agent: AgentDefinition, request: AgentRunRequest
+    ) -> AgentRunResult:
+        started_at = datetime.now(tz=UTC)
+        await self._publish_bus_event(
+            "kernel.events.agent_run_started",
+            {"agent_id": agent.agent_id, "agent_name": agent.name, "started_at": started_at.isoformat()},
+        )
+
+        pipeline_request = registry.build_pipeline_request(agent, request)
+        pipeline_result = await self.run_pipeline(pipeline_request)
+        completed_at = datetime.now(tz=UTC)
+        governance_action = pipeline_result.governance_decision["action_taken"]
+        status = registry.status_from_governance(governance_action)
+        run_result = build_run_result(
+            agent=agent,
+            status=status,
+            governance_action=governance_action,
+            started_at=started_at,
+            completed_at=completed_at,
+            pipeline_result=pipeline_result,
+        )
+        registry.record_run(run_result)
+        await self._publish_bus_event(
+            "kernel.events.agent_run_completed",
+            {
+                "run_id": run_result.run_id,
+                "agent_id": agent.agent_id,
+                "status": run_result.status.value,
+                "governance_action": governance_action,
+            },
+        )
+        return run_result

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from enum import Enum
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -21,6 +22,87 @@ class ActionTemplate(BaseModel):
     requires_approval: bool = False
     reversibility: str = "partial"
     criticality: float = 0.0
+
+
+class ToolBinding(BaseModel):
+    tool_id: str
+    name: str
+    description: str
+    action_type: str = "notify"
+    target: str
+    parameters: dict[str, Any] = Field(default_factory=dict)
+    requires_approval: bool = False
+    reversibility: str = "partial"
+    criticality: float = 0.0
+
+
+class AgentRunStatus(str, Enum):
+    completed = "completed"
+    blocked = "blocked"
+    escalated = "escalated"
+    monitored = "monitored"
+    failed = "failed"
+
+
+class AgentDefinition(BaseModel):
+    agent_id: str
+    name: str
+    description: str
+    goal: str
+    reasoning_mode: ReasoningMode = ReasoningMode.proactive
+    memory_type: MemoryType = MemoryType.working
+    default_query: str = "Assess current multimodal operating state"
+    streams: list[StreamSpec] = Field(default_factory=list)
+    tools: list[ToolBinding] = Field(default_factory=list)
+    tags: list[str] = Field(default_factory=list)
+    active: bool = True
+    created_at: datetime = Field(default_factory=lambda: datetime.now(tz=UTC))
+
+
+class AgentCreateRequest(BaseModel):
+    agent_id: str
+    name: str
+    description: str
+    goal: str
+    reasoning_mode: ReasoningMode = ReasoningMode.proactive
+    memory_type: MemoryType = MemoryType.working
+    default_query: str = "Assess current multimodal operating state"
+    streams: list[StreamSpec] = Field(default_factory=list)
+    tools: list[ToolBinding] = Field(default_factory=list)
+    tags: list[str] = Field(default_factory=list)
+    active: bool = True
+
+
+class AgentRunRequest(BaseModel):
+    query: str | None = None
+    packets_per_stream: int = 1
+    publish_realtime: bool = True
+    register_streams: bool = True
+    reasoning_state_overrides: dict[str, Any] = Field(default_factory=dict)
+    reasoning_history: list[dict[str, Any]] = Field(default_factory=list)
+    action_template_override: ActionTemplate | None = None
+    window_center: datetime = Field(default_factory=lambda: datetime.now(tz=UTC))
+
+
+class AgentRunResult(BaseModel):
+    run_id: str
+    agent_id: str
+    agent_name: str
+    status: AgentRunStatus
+    started_at: datetime
+    completed_at: datetime
+    governance_action: str
+    pipeline_result: "KernelPipelineResult"
+
+
+class AgentRunSummary(BaseModel):
+    run_id: str
+    agent_id: str
+    agent_name: str
+    status: AgentRunStatus
+    governance_action: str
+    started_at: datetime
+    completed_at: datetime
 
 
 class KernelPipelineRequest(BaseModel):
@@ -53,3 +135,5 @@ class KernelPipelineResult(BaseModel):
     governance_decision: dict[str, Any]
     action_result: dict[str, Any] | None = None
 
+
+AgentRunResult.model_rebuild()

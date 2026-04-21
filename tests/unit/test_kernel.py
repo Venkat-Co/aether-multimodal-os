@@ -1,8 +1,9 @@
 import pytest
 
 from aether_core.event_bus import InMemoryEventBus
-from services.kernel.app.models import KernelPipelineRequest
+from services.kernel.app.models import AgentCreateRequest, AgentRunRequest, KernelPipelineRequest, StreamSpec, ToolBinding
 from services.kernel.app.orchestrator import KernelOrchestrator
+from services.kernel.app.registry import AgentRegistry, build_default_agents
 
 
 class FakeClients:
@@ -128,3 +129,62 @@ async def test_kernel_uses_bus_driven_fusion_when_distributed() -> None:
     assert clients.ingest_calls == 0
     assert clients.buffer_checks >= 1
     await bus.close()
+
+
+@pytest.mark.asyncio
+async def test_kernel_runs_seeded_agent_through_pipeline() -> None:
+    clients = FakeClients()
+    bus = InMemoryEventBus()
+    registry = AgentRegistry(seed_agents=build_default_agents())
+    await bus.connect()
+    orchestrator = KernelOrchestrator(clients, bus, "aether-kernel")  # type: ignore[arg-type]
+
+    agent = registry.get_agent("ops_supervisor")
+    assert agent is not None
+
+    result = await orchestrator.run_agent(registry, agent, AgentRunRequest())
+
+    assert result.agent_id == "ops_supervisor"
+    assert result.status.value == "completed"
+    assert result.governance_action == "ALLOW"
+    assert result.pipeline_result.action_result is not None
+    assert len(registry.list_runs()) == 1
+    await bus.close()
+
+
+def test_agent_registry_builds_pipeline_request_from_definition() -> None:
+    registry = AgentRegistry()
+    agent = registry.create_agent(
+        AgentCreateRequest(
+            agent_id="safety_watch",
+            name="Safety Watch",
+            description="Monitors safety signals.",
+            goal="Detect risk early and notify safety operations.",
+            default_query="Assess live safety conditions.",
+            streams=[
+                StreamSpec(source_id="camera_001", modality="vision"),
+                StreamSpec(source_id="sensor_001", modality="sensor"),
+            ],
+            tools=[
+                ToolBinding(
+                    tool_id="notify_safety",
+                    name="Safety Notification",
+                    description="Notify safety operations.",
+                    target="safety_operations",
+                    parameters={"channel": "safety"},
+                    criticality=0.4,
+                )
+            ],
+            tags=["safety"],
+        )
+    )
+
+    request = registry.build_pipeline_request(
+        agent,
+        AgentRunRequest(query="Explain the current safety state.", packets_per_stream=2),
+    )
+
+    assert request.query == "Explain the current safety state."
+    assert request.packets_per_stream == 2
+    assert request.streams[0].source_id == "camera_001"
+    assert request.action_template.target == "safety_operations"

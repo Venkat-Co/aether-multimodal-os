@@ -10,6 +10,8 @@ type DashboardState = {
   alerts: Array<Record<string, unknown>>;
   reasoning: Array<Record<string, unknown>>;
   memory_updates: Array<Record<string, unknown>>;
+  agents: Array<Record<string, unknown>>;
+  agent_runs: Array<Record<string, unknown>>;
   latest_action?: Record<string, unknown>;
 };
 
@@ -59,6 +61,8 @@ const initialState: DashboardState = {
   alerts: [],
   reasoning: [],
   memory_updates: [],
+  agents: [],
+  agent_runs: [],
 };
 
 const orbitalNodes: Array<{ position: [number, number, number]; color: string; scale: number }> = [
@@ -382,6 +386,54 @@ function summarizeMemory(item: Record<string, unknown>, nowMs: number): InsightM
   };
 }
 
+function summarizeAgentDefinition(item: Record<string, unknown>, nowMs: number): InsightModel {
+  const tags = Array.isArray(item["tags"])
+    ? item["tags"].filter((tag): tag is string => typeof tag === "string").slice(0, 3)
+    : [];
+  const tools = Array.isArray(item["tools"]) ? item["tools"].length : 0;
+
+  return {
+    lane: "Agent",
+    title: textValue(item["name"]) ?? textValue(item["agent_id"]) ?? "Registered agent",
+    summary: truncateText(
+      textValue(item["goal"]) ?? textValue(item["description"]) ?? "Agent definition is ready for governed execution.",
+      112,
+    ),
+    meta: [
+      textValue(item["agent_id"]) ?? "agent",
+      `${tools} ${tools === 1 ? "tool" : "tools"}`,
+      tags.length > 0 ? tags.map(humanizeToken).join(" • ") : "Runtime ready",
+    ],
+    tone: "cyan",
+    timestamp: formatClock(item["created_at"]),
+    relativeTime: formatRelativeTime(item["created_at"], nowMs),
+  };
+}
+
+function summarizeAgentRun(item: Record<string, unknown>, nowMs: number): InsightModel {
+  const status = textValue(item["status"]) ?? "completed";
+  const governanceAction = textValue(item["governance_action"]) ?? "ALLOW";
+  const tone: Tone =
+    status === "blocked" ? "red" : status === "escalated" || status === "monitored" ? "amber" : "mint";
+
+  return {
+    lane: humanizeToken(status),
+    title: textValue(item["agent_name"]) ?? textValue(item["agent_id"]) ?? "Agent run completed",
+    summary: truncateText(
+      `Governance ${governanceAction}. ${textValue(item["agent_id"]) ?? "Agent"} completed its latest orchestrated run.`,
+      112,
+    ),
+    meta: [
+      textValue(item["run_id"]) ?? "agent-run",
+      `Action ${governanceAction}`,
+      textValue(item["agent_id"]) ?? "agent",
+    ],
+    tone,
+    timestamp: formatClock(item["completed_at"] ?? item["started_at"]),
+    relativeTime: formatRelativeTime(item["completed_at"] ?? item["started_at"], nowMs),
+  };
+}
+
 function buildActivityTimeline(state: DashboardState, nowMs: number): ActivityModel[] {
   const items: ActivityModel[] = [];
 
@@ -437,6 +489,26 @@ function buildActivityTimeline(state: DashboardState, nowMs: number): ActivityMo
       tone: "slate",
       timestamp: formatClock(record["timestamp"]),
       sortKey: timestampMillis(record["timestamp"]),
+    });
+  }
+
+  for (const item of state.agent_runs.slice(-3)) {
+    const record = asRecord(item);
+    items.push({
+      lane: "Agent Runtime",
+      title: truncateText(
+        `${textValue(record["agent_name"]) ?? "Agent"} · ${humanizeToken(textValue(record["status"]) ?? "completed")}`,
+        78,
+      ),
+      detail: formatRelativeTime(record["completed_at"] ?? record["started_at"], nowMs),
+      tone:
+        textValue(record["status"]) === "blocked"
+          ? "red"
+          : textValue(record["status"]) === "escalated" || textValue(record["status"]) === "monitored"
+            ? "amber"
+            : "mint",
+      timestamp: formatClock(record["completed_at"] ?? record["started_at"]),
+      sortKey: timestampMillis(record["completed_at"] ?? record["started_at"]),
     });
   }
 
@@ -626,12 +698,15 @@ export default function App() {
   const reasoningCards = state.reasoning.slice(-4).map((item) => summarizeReasoning(item, nowMs));
   const alertCards = state.alerts.slice(-4).map((item) => summarizeAlert(item, nowMs));
   const memoryCards = state.memory_updates.slice(-6).map((item) => summarizeMemory(item, nowMs));
+  const agentRunCards = state.agent_runs.slice(-4).map((item) => summarizeAgentRun(item, nowMs));
+  const agentCards = state.agents.slice(-4).map((item) => summarizeAgentDefinition(item, nowMs));
   const fusionCards = state.fusion.slice(-4).map((item) => summarizeFusion(item, nowMs));
   const activityTimeline = buildActivityTimeline(state, nowMs);
   const latestReasoning = reasoningCards[reasoningCards.length - 1];
   const latestAlert = alertCards[alertCards.length - 1];
   const latestMemory = memoryCards[memoryCards.length - 1];
   const latestFusion = fusionCards[fusionCards.length - 1];
+  const latestAgentRun = agentRunCards[agentRunCards.length - 1];
   const latestAction = asRecord(state.latest_action);
   const latestDecision = asRecord(latestAction["decision"]);
   const latestResult = asRecord(latestAction["result"]);
@@ -665,10 +740,10 @@ export default function App() {
       tone: toneForGovernanceAction(latestDecisionAction),
     },
     {
-      label: "Memory Graph",
-      value: String(state.memory_updates.length),
-      detail: latestMemory?.title ?? "No memory mutations broadcast yet",
-      progress: clampProgress(state.memory_updates.length / 8),
+      label: "Agent Runtime",
+      value: String(state.agents.length),
+      detail: latestAgentRun?.title ?? `${state.agent_runs.length} recent governed runs`,
+      progress: clampProgress(state.agent_runs.length > 0 ? state.agent_runs.length / 6 : state.agents.length / 4),
       tone: "mint",
     },
   ];
@@ -716,6 +791,7 @@ export default function App() {
             <div className="hero-ribbon">
               <span className="inline-pill">Kernel {humanizeToken(state.status)}</span>
               <span className="inline-pill">Modalities {activeModalities.length}</span>
+              <span className="inline-pill">Agents {state.agents.length}</span>
               <span className="inline-pill">Events {activityTimeline.length}</span>
               <span className="inline-pill">Action Loop {textValue(latestResult["status"]) ?? "idle"}</span>
             </div>
@@ -908,6 +984,27 @@ export default function App() {
               ) : (
                 <EmptyState title="Memory graph warming up" body="Persisted memory nodes will land here once the kernel stores fused events." />
               )}
+            </div>
+          </article>
+
+          <article className="panel agent-panel">
+            <div className="panel-topline">
+              <div>
+                <span className="section-kicker">Agent Runtime</span>
+                <h2>Governed agents and recent runs</h2>
+              </div>
+              <span className="panel-meta">{state.agent_runs.length} recent runs</span>
+            </div>
+
+            <div className="insight-stack">
+              {agentRunCards.length > 0
+                ? agentRunCards
+                    .slice()
+                    .reverse()
+                    .map((item, index) => <InsightCard key={`${item.lane}-${item.timestamp}-${index}`} item={item} featured={index === 0} />)
+                : agentCards.length > 0
+                  ? agentCards.map((item, index) => <InsightCard key={`${item.lane}-${item.timestamp}-${index}`} item={item} featured={index === 0} />)
+                  : <EmptyState title="No agents registered" body="Register or run an agent to bring the orchestration runtime online." />}
             </div>
           </article>
         </section>

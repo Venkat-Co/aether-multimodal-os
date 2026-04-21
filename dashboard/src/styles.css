@@ -462,7 +462,8 @@ body::before {
 
 .reasoning-panel,
 .governance-panel,
-.memory-panel {
+.memory-panel,
+.agent-panel {
   grid-column: span 4;
 }
 
@@ -850,7 +851,8 @@ body::before {
   .stream-panel,
   .reasoning-panel,
   .governance-panel,
-  .memory-panel {
+  .memory-panel,
+  .agent-panel {
     grid-column: span 12;
   }
 

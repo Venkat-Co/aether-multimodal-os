@@ -94,6 +94,47 @@
       }
     }
   ],
+  "agents": [
+    {
+      "agent_id": "ops_supervisor",
+      "name": "Operations Supervisor",
+      "description": "Supervises live plant conditions and flags multimodal anomalies for human review.",
+      "goal": "Maintain safe operating conditions and escalate emerging multimodal anomalies.",
+      "created_at": "2026-04-21T19:10:00Z",
+      "tags": ["operations", "anomaly-detection", "supervision"],
+      "tools": [
+        {
+          "tool_id": "notify_supervisor",
+          "name": "Supervisor Notification"
+        }
+      ]
+    },
+    {
+      "agent_id": "incident_triage",
+      "name": "Incident Triage",
+      "description": "Correlates live multimodal signals with text and sensor context to triage operational incidents.",
+      "goal": "Classify incidents quickly and route them through governed response paths.",
+      "created_at": "2026-04-21T19:11:30Z",
+      "tags": ["incident-response", "causal-analysis", "triage"],
+      "tools": [
+        {
+          "tool_id": "page_incident_channel",
+          "name": "Incident Broadcast"
+        }
+      ]
+    }
+  ],
+  "agent_runs": [
+    {
+      "run_id": "agr_pages_demo_01",
+      "agent_id": "ops_supervisor",
+      "agent_name": "Operations Supervisor",
+      "status": "monitored",
+      "governance_action": "MONITOR",
+      "started_at": "2026-04-21T19:14:50Z",
+      "completed_at": "2026-04-21T19:14:59Z"
+    }
+  ],
   "latest_action": {
     "decision": {
       "timestamp": "2026-04-21T19:14:58Z",
