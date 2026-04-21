@@ -1,0 +1,136 @@
+global:
+  namespace: aether-system
+  imagePullPolicy: IfNotPresent
+  apiTokenSecret: aether-api-token
+
+services:
+  ingestion:
+    replicaCount: 3
+    image: ghcr.io/example/aether-ingestion:latest
+    port: 8001
+    resources:
+      requests:
+        cpu: "500m"
+        memory: "512Mi"
+      limits:
+        cpu: "2"
+        memory: "2Gi"
+  fusion:
+    replicaCount: 2
+    image: ghcr.io/example/aether-fusion:latest
+    port: 8002
+    gpuEnabled: true
+    resources:
+      requests:
+        cpu: "2"
+        memory: "4Gi"
+      limits:
+        cpu: "4"
+        memory: "8Gi"
+  memory:
+    replicaCount: 2
+    image: ghcr.io/example/aether-memory:latest
+    port: 8003
+    resources:
+      requests:
+        cpu: "1"
+        memory: "1Gi"
+      limits:
+        cpu: "4"
+        memory: "8Gi"
+  reasoning:
+    replicaCount: 2
+    image: ghcr.io/example/aether-reasoning:latest
+    port: 8004
+    gpuEnabled: true
+    resources:
+      requests:
+        cpu: "2"
+        memory: "4Gi"
+      limits:
+        cpu: "8"
+        memory: "16Gi"
+  governance:
+    replicaCount: 2
+    image: ghcr.io/example/aether-governance:latest
+    port: 8005
+    resources:
+      requests:
+        cpu: "500m"
+        memory: "512Mi"
+      limits:
+        cpu: "2"
+        memory: "2Gi"
+  action:
+    replicaCount: 2
+    image: ghcr.io/example/aether-action:latest
+    port: 8006
+    resources:
+      requests:
+        cpu: "500m"
+        memory: "512Mi"
+      limits:
+        cpu: "2"
+        memory: "2Gi"
+  realtime:
+    replicaCount: 3
+    image: ghcr.io/example/aether-realtime:latest
+    port: 8007
+    resources:
+      requests:
+        cpu: "250m"
+        memory: "256Mi"
+      limits:
+        cpu: "1"
+        memory: "1Gi"
+  kernel:
+    replicaCount: 2
+    image: ghcr.io/example/aether-kernel:latest
+    port: 8008
+    resources:
+      requests:
+        cpu: "500m"
+        memory: "512Mi"
+      limits:
+        cpu: "2"
+        memory: "2Gi"
+  dashboard:
+    replicaCount: 2
+    image: ghcr.io/example/aether-dashboard:latest
+    port: 3000
+    resources:
+      requests:
+        cpu: "250m"
+        memory: "256Mi"
+      limits:
+        cpu: "1"
+        memory: "1Gi"
+
+databases:
+  kafka:
+    replicas: 3
+    image: bitnami/kafka:3.7.0
+    storage: 50Gi
+  neo4j:
+    replicas: 3
+    image: neo4j:5.20
+    storage: 200Gi
+  postgres:
+    image: pgvector/pgvector:pg16
+    storage: 200Gi
+  redis:
+    image: redis:7.2
+    replicas: 6
+    storage: 20Gi
+  timescaledb:
+    image: timescale/timescaledb:2.14.2-pg16
+    storage: 200Gi
+
+ingress:
+  enabled: true
+  className: nginx
+  host: aether.local
+
+observability:
+  grafanaEnabled: true
+  jaegerEnabled: true

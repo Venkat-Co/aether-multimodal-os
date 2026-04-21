@@ -1,0 +1,98 @@
+syntax = "proto3";
+
+package aether;
+
+message StreamPacket {
+  string packet_id = 1;
+  string modality = 2;
+  string timestamp = 3;
+  string source_id = 4;
+  string raw_data_json = 5;
+  repeated float embedding = 6;
+  string metadata_json = 7;
+  float confidence = 8;
+  string perceptual_hash = 9;
+}
+
+message FusedEvent {
+  string event_id = 1;
+  string timestamp = 2;
+  string window_center = 3;
+  repeated string modalities = 4;
+  repeated float fusion_vector = 5;
+  string semantic_summary = 6;
+  repeated string source_packets = 7;
+  float confidence = 8;
+}
+
+message MemoryNode {
+  string node_id = 1;
+  string memory_type = 2;
+  string content_json = 3;
+  repeated float embedding = 4;
+  string timestamp = 5;
+}
+
+message QueryRequest {
+  repeated float query_embedding = 1;
+  int32 top_k = 2;
+}
+
+message QueryResponse {
+  repeated MemoryNode nodes = 1;
+}
+
+message ReasoningRequest {
+  string query = 1;
+  string current_state_json = 2;
+  string mode = 3;
+  string history_json = 4;
+  int32 horizon = 5;
+}
+
+message ReasoningResult {
+  string reasoning_id = 1;
+  string mode = 2;
+  string summary = 3;
+  float confidence = 4;
+}
+
+message ActionContext {
+  string action_context_json = 1;
+  repeated float action_embedding = 2;
+}
+
+message GovernanceDecision {
+  string decision_id = 1;
+  string rule_id = 2;
+  string action_taken = 3;
+  string risk_level = 4;
+  string reasoning = 5;
+}
+
+message TemporalWindow {
+  string center = 1;
+}
+
+message Empty {}
+
+service FusionService {
+  rpc FuseWindow(TemporalWindow) returns (FusedEvent);
+  rpc StreamFusion(stream StreamPacket) returns (stream FusedEvent);
+}
+
+service MemoryService {
+  rpc StoreMemory(MemoryNode) returns (MemoryNode);
+  rpc QueryMemory(QueryRequest) returns (QueryResponse);
+  rpc StreamUpdates(Empty) returns (stream MemoryNode);
+}
+
+service ReasoningService {
+  rpc Reason(ReasoningRequest) returns (ReasoningResult);
+}
+
+service GovernanceService {
+  rpc EvaluateAction(ActionContext) returns (GovernanceDecision);
+  rpc StreamDecisions(Empty) returns (stream GovernanceDecision);
+}
+

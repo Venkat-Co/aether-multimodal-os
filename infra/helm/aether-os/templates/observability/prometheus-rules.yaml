@@ -1,0 +1,30 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "aether.fullname" . }}-alerts
+  namespace: {{ .Values.global.namespace }}
+spec:
+  groups:
+    - name: aether.rules
+      rules:
+        - alert: HighFusionLatency
+          expr: aether_fusion_latency_seconds{quantile="0.99"} > 0.5
+          for: 5m
+          labels:
+            severity: warning
+        - alert: GovernanceBlockRateHigh
+          expr: rate(aether_governance_decisions_total{action="block"}[5m]) > 10
+          for: 2m
+          labels:
+            severity: critical
+        - alert: MemoryGraphQuerySlow
+          expr: aether_memory_query_latency_seconds{quantile="0.95"} > 0.5
+          for: 10m
+          labels:
+            severity: warning
+        - alert: StreamDisconnection
+          expr: aether_streams_active_total < 5
+          for: 1m
+          labels:
+            severity: critical
+

@@ -1,0 +1,9 @@
+apiVersion: security.istio.io/v1beta1
+kind: PeerAuthentication
+metadata:
+  name: {{ include "aether.fullname" . }}-mtls
+  namespace: {{ .Values.global.namespace }}
+spec:
+  mtls:
+    mode: STRICT
+

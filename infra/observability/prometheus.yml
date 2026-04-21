@@ -1,0 +1,16 @@
+global:
+  scrape_interval: 15s
+
+scrape_configs:
+  - job_name: aether-services
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - ingestion:8001
+          - fusion:8002
+          - memory:8003
+          - reasoning:8004
+          - governance:8005
+          - action:8006
+          - realtime:8007
+

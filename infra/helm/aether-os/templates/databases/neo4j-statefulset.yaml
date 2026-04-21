@@ -1,0 +1,39 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "aether.fullname" . }}-neo4j
+  namespace: {{ .Values.global.namespace }}
+spec:
+  serviceName: {{ include "aether.fullname" . }}-neo4j
+  replicas: {{ .Values.databases.neo4j.replicas }}
+  selector:
+    matchLabels:
+      app: neo4j
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  template:
+    metadata:
+      labels:
+        app: neo4j
+        app.kubernetes.io/instance: {{ .Release.Name }}
+    spec:
+      containers:
+        - name: neo4j
+          image: {{ .Values.databases.neo4j.image }}
+          env:
+            - name: NEO4J_AUTH
+              value: neo4j/password
+          ports:
+            - containerPort: 7687
+            - containerPort: 7474
+          volumeMounts:
+            - name: data
+              mountPath: /data
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: {{ .Values.databases.neo4j.storage }}
+

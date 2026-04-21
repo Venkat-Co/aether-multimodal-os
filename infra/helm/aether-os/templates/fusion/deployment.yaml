@@ -1,0 +1,49 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "aether.fullname" . }}-fusion
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    app: fusion
+    {{- include "aether.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.services.fusion.replicaCount }}
+  selector:
+    matchLabels:
+      app: fusion
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  template:
+    metadata:
+      labels:
+        app: fusion
+        app.kubernetes.io/instance: {{ .Release.Name }}
+    spec:
+      serviceAccountName: {{ include "aether.serviceAccountName" . }}
+      containers:
+        - name: fusion
+          image: {{ .Values.services.fusion.image }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          ports:
+            - containerPort: {{ .Values.services.fusion.port }}
+          resources:
+            {{- toYaml .Values.services.fusion.resources | nindent 12 }}
+          {{- if .Values.services.fusion.gpuEnabled }}
+          env:
+            - name: NVIDIA_VISIBLE_DEVICES
+              value: all
+          {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "aether.fullname" . }}-fusion
+  namespace: {{ .Values.global.namespace }}
+spec:
+  selector:
+    app: fusion
+    app.kubernetes.io/instance: {{ .Release.Name }}
+  ports:
+    - name: http
+      port: 80
+      targetPort: {{ .Values.services.fusion.port }}
+

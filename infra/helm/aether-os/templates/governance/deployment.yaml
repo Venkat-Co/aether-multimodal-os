@@ -1,0 +1,41 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "aether.fullname" . }}-governance
+  namespace: {{ .Values.global.namespace }}
+spec:
+  replicas: {{ .Values.services.governance.replicaCount }}
+  selector:
+    matchLabels:
+      app: governance
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  template:
+    metadata:
+      labels:
+        app: governance
+        app.kubernetes.io/instance: {{ .Release.Name }}
+    spec:
+      serviceAccountName: {{ include "aether.serviceAccountName" . }}
+      containers:
+        - name: governance
+          image: {{ .Values.services.governance.image }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          ports:
+            - containerPort: {{ .Values.services.governance.port }}
+          resources:
+            {{- toYaml .Values.services.governance.resources | nindent 12 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "aether.fullname" . }}-governance
+  namespace: {{ .Values.global.namespace }}
+spec:
+  selector:
+    app: governance
+    app.kubernetes.io/instance: {{ .Release.Name }}
+  ports:
+    - name: http
+      port: 80
+      targetPort: {{ .Values.services.governance.port }}
+

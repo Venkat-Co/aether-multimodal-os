@@ -1,0 +1,39 @@
+global:
+  namespace: aether-system
+
+services:
+  ingestion:
+    replicaCount: 5
+  fusion:
+    replicaCount: 3
+    gpuEnabled: true
+  memory:
+    replicaCount: 3
+  reasoning:
+    replicaCount: 2
+    gpuEnabled: true
+  governance:
+    replicaCount: 2
+  action:
+    replicaCount: 3
+  realtime:
+    replicaCount: 5
+  kernel:
+    replicaCount: 2
+  dashboard:
+    replicaCount: 3
+
+databases:
+  kafka:
+    replicas: 3
+    storage: 200Gi
+  neo4j:
+    replicas: 3
+    storage: 2Ti
+  postgres:
+    storage: 500Gi
+  redis:
+    replicas: 6
+    storage: 100Gi
+  timescaledb:
+    storage: 500Gi

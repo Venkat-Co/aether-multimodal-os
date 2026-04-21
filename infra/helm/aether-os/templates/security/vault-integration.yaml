@@ -1,0 +1,27 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ .Values.global.apiTokenSecret }}
+  namespace: {{ .Values.global.namespace }}
+type: Opaque
+stringData:
+  token: "replace-me"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "aether.fullname" . }}-vault-agent
+  namespace: {{ .Values.global.namespace }}
+data:
+  vault.hcl: |
+    exit_after_auth = false
+    pid_file = "/tmp/vault-agent.pid"
+    auto_auth {
+      method "kubernetes" {
+        mount_path = "auth/kubernetes"
+        config = {
+          role = "aether-system"
+        }
+      }
+    }
+

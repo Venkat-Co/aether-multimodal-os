@@ -1,0 +1,41 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "aether.fullname" . }}-kernel
+  namespace: {{ .Values.global.namespace }}
+spec:
+  replicas: {{ .Values.services.kernel.replicaCount }}
+  selector:
+    matchLabels:
+      app: kernel
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  template:
+    metadata:
+      labels:
+        app: kernel
+        app.kubernetes.io/instance: {{ .Release.Name }}
+    spec:
+      serviceAccountName: {{ include "aether.serviceAccountName" . }}
+      containers:
+        - name: kernel
+          image: {{ .Values.services.kernel.image }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          ports:
+            - containerPort: {{ .Values.services.kernel.port }}
+          resources:
+            {{- toYaml .Values.services.kernel.resources | nindent 12 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "aether.fullname" . }}-kernel
+  namespace: {{ .Values.global.namespace }}
+spec:
+  selector:
+    app: kernel
+    app.kubernetes.io/instance: {{ .Release.Name }}
+  ports:
+    - name: http
+      port: 80
+      targetPort: {{ .Values.services.kernel.port }}
+

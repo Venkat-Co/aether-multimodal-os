@@ -1,0 +1,130 @@
+import pytest
+
+from aether_core.event_bus import InMemoryEventBus
+from services.kernel.app.models import KernelPipelineRequest
+from services.kernel.app.orchestrator import KernelOrchestrator
+
+
+class FakeClients:
+    def __init__(self) -> None:
+        self.published: list[tuple[str, dict]] = []
+        self.ingest_calls = 0
+        self.buffer_checks = 0
+
+    async def register_stream(self, payload):
+        return {"status": "registered", **payload}
+
+    async def emit_packet(self, source_id):
+        modality_map = {
+            "camera_001": "vision",
+            "mic_001": "audio",
+            "sensor_001": "sensor",
+            "log_001": "text",
+        }
+        raw_map = {
+            "camera_001": {"frame_index": 1},
+            "mic_001": {"sample_index": 1},
+            "sensor_001": {"temperature_c": 88.5, "vibration_g": 1.4},
+            "log_001": {"message": "thermal anomaly detected"},
+        }
+        return {
+            "packet_id": f"pkt_{source_id}",
+            "source_id": source_id,
+            "modality": modality_map[source_id],
+            "timestamp": "2026-04-21T12:00:00Z",
+            "raw_data": raw_map[source_id],
+            "embedding": [0.1] * 768,
+            "confidence": 0.95,
+            "metadata": {},
+            "perceptual_hash": source_id[:8],
+        }
+
+    async def ingest_fusion_packet(self, packet):
+        self.ingest_calls += 1
+        return None
+
+    async def fuse_window(self, window_center):
+        return {
+            "event_id": "evt_001",
+            "timestamp": window_center,
+            "window_center": window_center,
+            "modalities": ["vision", "audio", "sensor", "text"],
+            "fusion_vector": [0.2] * 768,
+            "semantic_summary": "temperature spike with operator concern",
+            "source_packets": ["pkt_camera_001", "pkt_mic_001"],
+            "confidence": 0.92,
+            "spatial_bounds": {"center": [10.5, 20.3, 0.0], "radius_m": 5.0},
+        }
+
+    async def store_memory(self, payload):
+        return {"node_id": "mem_001", **payload}
+
+    async def reason(self, payload):
+        return {
+            "reasoning_id": "rsn_001",
+            "mode": payload["mode"],
+            "summary": "proactive trigger fired",
+            "action_plan": [{"type": "notify"}],
+            "predictions": [],
+            "causes": [],
+            "confidence": 0.88,
+        }
+
+    async def evaluate_governance(self, payload):
+        return {
+            "decision_id": "gov_001",
+            "rule_id": "DEFAULT_ALLOW",
+            "action_taken": "ALLOW",
+            "risk_level": "LOW",
+            "reasoning": "no blocking rule matched",
+            "confidence": 0.8,
+        }
+
+    async def dispatch_action(self, payload):
+        return {"status": "executed", "result": {"target": payload["target"]}}
+
+    async def publish(self, topic, payload):
+        self.published.append((topic, payload))
+
+    async def fusion_buffer_state(self):
+        self.buffer_checks += 1
+        return {"buffered_packets": 4}
+
+
+class DistributedInMemoryEventBus(InMemoryEventBus):
+    distributed = True
+
+
+@pytest.mark.asyncio
+async def test_kernel_orchestrates_end_to_end_pipeline() -> None:
+    clients = FakeClients()
+    bus = InMemoryEventBus()
+    await bus.connect()
+    orchestrator = KernelOrchestrator(clients, bus, "aether-kernel")  # type: ignore[arg-type]
+
+    result = await orchestrator.run_pipeline(KernelPipelineRequest())
+
+    assert len(result.registered_streams) == 4
+    assert len(result.packets) == 4
+    assert result.fused_event["event_id"] == "evt_001"
+    assert result.memory_node["node_id"] == "mem_001"
+    assert result.reasoning_result["mode"] == "proactive"
+    assert result.governance_decision["action_taken"] == "ALLOW"
+    assert result.action_result is not None
+    assert any(topic == "fusion" for topic, _ in clients.published)
+    await bus.close()
+
+
+@pytest.mark.asyncio
+async def test_kernel_uses_bus_driven_fusion_when_distributed() -> None:
+    clients = FakeClients()
+    bus = DistributedInMemoryEventBus()
+    await bus.connect()
+    orchestrator = KernelOrchestrator(clients, bus, "aether-kernel")  # type: ignore[arg-type]
+
+    result = await orchestrator.run_pipeline(KernelPipelineRequest())
+
+    assert result.fused_event["event_id"] == "evt_001"
+    assert clients.ingest_calls == 0
+    assert clients.buffer_checks >= 1
+    await bus.close()
