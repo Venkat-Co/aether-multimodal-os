@@ -623,6 +623,63 @@ body::before {
   line-height: 1.4;
 }
 
+.review-card {
+  display: grid;
+  gap: 0.9rem;
+}
+
+.review-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.65rem;
+}
+
+.review-button {
+  appearance: none;
+  border: 1px solid var(--panel-line-strong);
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--ink);
+  border-radius: 999px;
+  padding: 0.62rem 0.9rem;
+  font: inherit;
+  font-size: 0.76rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: transform 140ms ease, border-color 140ms ease, background 140ms ease, opacity 140ms ease;
+}
+
+.review-button:hover:not(:disabled) {
+  transform: translateY(-1px);
+}
+
+.review-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.58;
+}
+
+.review-button-approve {
+  border-color: rgba(140, 231, 187, 0.26);
+  background: rgba(140, 231, 187, 0.08);
+}
+
+.review-button-rerun {
+  border-color: rgba(142, 233, 255, 0.26);
+  background: rgba(142, 233, 255, 0.08);
+}
+
+.review-button-reject {
+  border-color: rgba(255, 142, 122, 0.28);
+  background: rgba(255, 142, 122, 0.08);
+}
+
+.review-action-message {
+  color: var(--muted);
+  font-size: 0.82rem;
+  line-height: 1.5;
+}
+
 .insight-card p {
   margin: 0;
   color: var(--muted);

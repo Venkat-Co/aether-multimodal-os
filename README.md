@@ -108,6 +108,7 @@ proto                       gRPC contracts
 2. Start the full stack with `make start` or `./scripts/start-local.sh`.
 3. Trigger the end-to-end demo loop with `make demo`, `./scripts/demo-local.sh`, or `./scripts/start-local.sh --demo`.
 4. Open the dashboard at `http://localhost:3000`.
+   - The dashboard will auto-target the kernel review API at `http://localhost:8008` for local approval actions.
 5. Open service docs:
    - Ingestion: `http://localhost:8001/docs`
    - Fusion: `http://localhost:8002/docs`
@@ -144,6 +145,7 @@ Because GitHub Pages is a static host, the public site runs in curated demo mode
 If you later host the realtime layer somewhere else, you can point the Pages build at it with:
 
 - `https://venkat-co.github.io/aether-multimodal-os/?ws=wss://your-realtime-host`
+- `https://venkat-co.github.io/aether-multimodal-os/?ws=wss://your-realtime-host&api=https://your-kernel-host`
 
 ## Current Maturity
 

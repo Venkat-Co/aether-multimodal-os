@@ -779,6 +779,10 @@ function normalizeSocketBase(value: string): string {
   return value.replace(/\/+$/, "");
 }
 
+function normalizeApiBase(value: string): string {
+  return value.replace(/\/+$/, "");
+}
+
 function resolveSocketBase(): string | undefined {
   const params = new URLSearchParams(window.location.search);
   const queryValue = params.get("ws");
@@ -789,6 +793,39 @@ function resolveSocketBase(): string | undefined {
   const envValue = import.meta.env.VITE_WS_URL;
   if (typeof envValue === "string" && envValue.trim().length > 0) {
     return normalizeSocketBase(envValue.trim());
+  }
+
+  return undefined;
+}
+
+function resolveApiBase(): string | undefined {
+  const params = new URLSearchParams(window.location.search);
+  const queryValue = params.get("api");
+  if (queryValue && queryValue.trim().length > 0) {
+    return normalizeApiBase(queryValue.trim());
+  }
+
+  const envValue = import.meta.env.VITE_API_URL;
+  if (typeof envValue === "string" && envValue.trim().length > 0) {
+    return normalizeApiBase(envValue.trim());
+  }
+
+  const wsBase = resolveSocketBase();
+  if (wsBase) {
+    try {
+      const url = new URL(wsBase);
+      url.protocol = url.protocol === "wss:" ? "https:" : "http:";
+      if (url.port === "8007") {
+        url.port = "8008";
+      }
+      return normalizeApiBase(url.toString());
+    } catch {
+      return undefined;
+    }
+  }
+
+  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
+    return `${window.location.protocol}//${window.location.hostname}:8008`;
   }
 
   return undefined;
@@ -952,9 +989,89 @@ function EmptyState({ title, body }: { title: string; body: string }) {
   );
 }
 
+function ReviewQueueCard({
+  item,
+  nowMs,
+  actionLabel,
+  actionMessage,
+  canResolve,
+  onResolve,
+}: {
+  item: Record<string, unknown>;
+  nowMs: number;
+  actionLabel?: string;
+  actionMessage?: string;
+  canResolve: boolean;
+  onResolve: (resolution: string, rerunSource: boolean) => Promise<void>;
+}) {
+  const insight = summarizeReviewItem(item, nowMs);
+  const reviewId = textValue(item["review_id"]);
+  const status = textValue(item["status"]) ?? "pending";
+  const isPending = status === "pending";
+
+  return (
+    <article className={`insight-card tone-${insight.tone} ${isPending ? "review-card" : ""}`}>
+      <div className="insight-head">
+        <span className="insight-lane">{insight.lane}</span>
+        <div className="insight-time">
+          <strong>{insight.timestamp}</strong>
+          <span>{insight.relativeTime}</span>
+        </div>
+      </div>
+      <h3>{insight.title}</h3>
+      <p>{insight.summary}</p>
+      <div className="insight-meta">
+        {insight.meta.map((meta, index) => (
+          <span key={`${meta}-${index}`}>{meta}</span>
+        ))}
+      </div>
+      {isPending ? (
+        <div className="review-actions">
+          <button
+            type="button"
+            className="review-button review-button-approve"
+            disabled={!canResolve || !reviewId || Boolean(actionLabel)}
+            onClick={() => void onResolve("approved", false)}
+          >
+            {actionLabel === "approved" ? "Approving..." : "Approve"}
+          </button>
+          <button
+            type="button"
+            className="review-button review-button-rerun"
+            disabled={!canResolve || !reviewId || Boolean(actionLabel)}
+            onClick={() => void onResolve("approved", true)}
+          >
+            {actionLabel === "approved_rerun" ? "Replaying..." : "Approve + Rerun"}
+          </button>
+          <button
+            type="button"
+            className="review-button review-button-reject"
+            disabled={!canResolve || !reviewId || Boolean(actionLabel)}
+            onClick={() => void onResolve("rejected", false)}
+          >
+            {actionLabel === "rejected" ? "Rejecting..." : "Reject"}
+          </button>
+        </div>
+      ) : null}
+      {actionMessage ? <div className="review-action-message">{actionMessage}</div> : null}
+      {!canResolve && isPending ? (
+        <div className="review-action-message">Review actions require a live kernel API.</div>
+      ) : null}
+    </article>
+  );
+}
+
 export default function App() {
   const { state, socketStatus, nowMs } = useDashboardState();
+  const apiBase = resolveApiBase();
+  const [reviewActionState, setReviewActionState] = useState<Record<string, string>>({});
+  const [reviewActionMessage, setReviewActionMessage] = useState<Record<string, string>>({});
+  const [reviewOverrides, setReviewOverrides] = useState<Record<string, Record<string, unknown>>>({});
   const streamDirectory = buildStreamDirectory(state.streams, nowMs);
+  const reviews = state.reviews.map((item) => {
+    const reviewId = textValue(asRecord(item)["review_id"]);
+    return reviewId && reviewOverrides[reviewId] ? reviewOverrides[reviewId] : item;
+  });
   const reasoningCards = state.reasoning.slice(-4).map((item) => summarizeReasoning(item, nowMs));
   const alertCards = state.alerts.slice(-4).map((item) => summarizeAlert(item, nowMs));
   const memoryCards = state.memory_updates.slice(-6).map((item) => summarizeMemory(item, nowMs));
@@ -965,7 +1082,7 @@ export default function App() {
   const taskRunCards = state.task_runs.slice(-4).map((item) => summarizeTaskRun(item, nowMs));
   const workflowCards = state.workflows.slice(-4).map((item) => summarizeWorkflowTemplate(item, nowMs));
   const workflowRunCards = state.workflow_runs.slice(-4).map((item) => summarizeWorkflowRun(item, nowMs));
-  const reviewCards = state.reviews.slice(-4).map((item) => summarizeReviewItem(item, nowMs));
+  const reviewCards = reviews.slice(-4).map((item) => summarizeReviewItem(item, nowMs));
   const fusionCards = state.fusion.slice(-4).map((item) => summarizeFusion(item, nowMs));
   const activityTimeline = buildActivityTimeline(state, nowMs);
   const latestReasoning = reasoningCards[reasoningCards.length - 1];
@@ -981,8 +1098,60 @@ export default function App() {
   const latestResult = asRecord(latestAction["result"]);
   const activeModalities = Array.from(new Set(streamDirectory.map((stream) => stream.modality)));
   const socketTone = toneForSocketStatus(socketStatus);
+  const canResolveReviews = Boolean(apiBase) && socketStatus !== "demo" && socketStatus !== "offline";
   const latestFusionConfidence = normalizeConfidence(numberValue(asRecord(state.fusion[state.fusion.length - 1])["confidence"]));
   const latestDecisionAction = textValue(latestDecision["action_taken"])?.toUpperCase() ?? "ALLOW";
+
+  async function handleResolveReview(reviewId: string, resolution: string, rerunSource: boolean): Promise<void> {
+    if (!apiBase) {
+      return;
+    }
+
+    const actionKey = rerunSource ? `${resolution}_rerun` : resolution;
+    setReviewActionState((current) => ({ ...current, [reviewId]: actionKey }));
+    setReviewActionMessage((current) => ({ ...current, [reviewId]: "" }));
+
+    try {
+      const response = await fetch(`${apiBase}/api/v1/kernel/reviews/${reviewId}/resolve`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          resolution,
+          reviewed_by: "dashboard_operator",
+          rerun_source: rerunSource,
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`review-action-${response.status}`);
+      }
+
+      const payload = (await response.json()) as { review?: Record<string, unknown>; replay?: Record<string, unknown> | null };
+      if (payload.review) {
+        const resolvedReview = { ...payload.review };
+        if (payload.replay) {
+          const metadata = asRecord(resolvedReview["metadata"]);
+          resolvedReview["metadata"] = { ...metadata, replay: payload.replay };
+        }
+        setReviewOverrides((current) => ({ ...current, [reviewId]: resolvedReview }));
+      }
+      setReviewActionMessage((current) => ({
+        ...current,
+        [reviewId]: rerunSource ? "Approved and replayed through the runtime." : `Marked ${humanizeToken(resolution)}.`,
+      }));
+    } catch {
+      setReviewActionMessage((current) => ({
+        ...current,
+        [reviewId]: "Review action failed. Check the kernel API and try again.",
+      }));
+    } finally {
+      setReviewActionState((current) => {
+        const next = { ...current };
+        delete next[reviewId];
+        return next;
+      });
+    }
+  }
   const metricCards: MetricModel[] = [
     {
       label: "Signal Fabric",
@@ -1065,7 +1234,7 @@ export default function App() {
               <span className="inline-pill">Agents {state.agents.length}</span>
               <span className="inline-pill">Tasks {state.tasks.length}</span>
               <span className="inline-pill">Workflows {state.workflows.length}</span>
-              <span className="inline-pill">Human Queue {state.reviews.length}</span>
+              <span className="inline-pill">Human Queue {reviews.length}</span>
               <span className="inline-pill">Events {activityTimeline.length}</span>
               <span className="inline-pill">Action Loop {textValue(latestResult["status"]) ?? "idle"}</span>
             </div>
@@ -1246,15 +1415,29 @@ export default function App() {
                 <span className="section-kicker">Human Oversight</span>
                 <h2>Review queue and approvals</h2>
               </div>
-              <span className="panel-meta">{state.reviews.length} review items</span>
+              <span className="panel-meta">{reviews.length} review items</span>
             </div>
 
             <div className="insight-stack">
-              {reviewCards.length > 0 ? (
-                reviewCards
+              {reviews.length > 0 ? (
+                reviews
                   .slice()
                   .reverse()
-                  .map((item, index) => <InsightCard key={`${item.lane}-${item.timestamp}-${index}`} item={item} featured={index === 0} />)
+                  .map((item, index) => {
+                    const record = asRecord(item);
+                    const reviewId = textValue(record["review_id"]) ?? `review-${index}`;
+                    return (
+                      <ReviewQueueCard
+                        key={reviewId}
+                        item={record}
+                        nowMs={nowMs}
+                        canResolve={canResolveReviews}
+                        actionLabel={reviewActionState[reviewId]}
+                        actionMessage={reviewActionMessage[reviewId]}
+                        onResolve={(resolution, rerunSource) => handleResolveReview(reviewId, resolution, rerunSource)}
+                      />
+                    );
+                  })
               ) : latestReview ? (
                 <InsightCard item={latestReview} featured />
               ) : (

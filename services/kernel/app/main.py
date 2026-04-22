@@ -3,6 +3,7 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 
 from aether_core.config import get_settings
 from aether_core.event_bus import InMemoryEventBus, build_event_bus, connect_event_bus_with_retry
@@ -90,6 +91,13 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(title="AETHER Kernel Service", version="1.0.0", lifespan=lifespan)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 instrument_fastapi(app, settings)
 mount_metrics(app)
 
