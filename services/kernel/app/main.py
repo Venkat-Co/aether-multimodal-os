@@ -17,6 +17,8 @@ from .models import (
     AgentRunSummary,
     KernelPipelineRequest,
     KernelPipelineResult,
+    ReviewQueueItem,
+    ReviewResolveRequest,
     TaskCreateRequest,
     TaskExecutionSummary,
     TaskRunRequest,
@@ -58,6 +60,7 @@ async def publish_runtime_snapshot() -> None:
             "task_runs": [run.model_dump(mode="json") for run in registry.list_task_runs()],
             "workflows": [workflow.model_dump(mode="json") for workflow in registry.list_workflows()],
             "workflow_runs": [run.model_dump(mode="json") for run in registry.list_workflow_runs()],
+            "reviews": [review.model_dump(mode="json") for review in registry.list_reviews()],
         },
     )
 
@@ -146,6 +149,32 @@ async def list_agents() -> list[AgentDefinition]:
 @app.get("/api/v1/kernel/agents/runs", response_model=list[AgentRunSummary])
 async def list_agent_runs() -> list[AgentRunSummary]:
     return registry.list_runs()
+
+
+@app.get("/api/v1/kernel/reviews", response_model=list[ReviewQueueItem])
+async def list_reviews() -> list[ReviewQueueItem]:
+    return registry.list_reviews()
+
+
+@app.get("/api/v1/kernel/reviews/{review_id}", response_model=ReviewQueueItem)
+async def get_review(review_id: str) -> ReviewQueueItem:
+    review = registry.get_review(review_id)
+    if review is None:
+        raise HTTPException(status_code=404, detail=f"Review item '{review_id}' not found")
+    return review
+
+
+@app.post("/api/v1/kernel/reviews/{review_id}/resolve", response_model=ReviewQueueItem)
+async def resolve_review(review_id: str, request: ReviewResolveRequest) -> ReviewQueueItem:
+    review = registry.resolve_review(review_id, request)
+    if review is None:
+        raise HTTPException(status_code=404, detail=f"Review item '{review_id}' not found")
+    logger.info("Resolved review queue item", extra={"review_id": review.review_id, "resolution": review.resolution})
+    try:
+        await publish_runtime_snapshot()
+    except Exception:
+        logger.info("Realtime dashboard unavailable during review resolution publish", extra={"review_id": review.review_id})
+    return review
 
 
 @app.post("/api/v1/kernel/agents", response_model=AgentDefinition)

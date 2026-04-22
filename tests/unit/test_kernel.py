@@ -103,6 +103,21 @@ class FakeClients:
         return {"buffered_packets": 4}
 
 
+class EscalatingClients(FakeClients):
+    async def evaluate_governance(self, payload):
+        return {
+            "decision_id": "gov_esc_001",
+            "rule_id": "SAFETY_003",
+            "action_taken": "ESCALATE",
+            "risk_level": "HIGH",
+            "reasoning": "Human override required for the requested action.",
+            "confidence": 0.91,
+        }
+
+    async def dispatch_action(self, payload):
+        raise AssertionError("Dispatch should not occur when governance escalates the run")
+
+
 class DistributedInMemoryEventBus(InMemoryEventBus):
     distributed = True
 
@@ -165,6 +180,34 @@ async def test_kernel_runs_seeded_agent_through_pipeline() -> None:
     assert result.governance_action == "ALLOW"
     assert result.pipeline_result.action_result is not None
     assert len(registry.list_runs()) == 1
+    await bus.close()
+
+
+@pytest.mark.asyncio
+async def test_kernel_queues_review_for_escalated_agent_run() -> None:
+    clients = EscalatingClients()
+    bus = InMemoryEventBus()
+    registry = AgentRegistry(
+        seed_agents=build_default_agents(),
+        seed_tools=build_default_tools(),
+        seed_tasks=build_default_tasks(),
+        seed_workflows=build_default_workflows(),
+    )
+    await bus.connect()
+    orchestrator = KernelOrchestrator(clients, bus, "aether-kernel")  # type: ignore[arg-type]
+
+    agent = registry.get_agent("ops_supervisor")
+    assert agent is not None
+
+    result = await orchestrator.run_agent(registry, agent, AgentRunRequest())
+
+    assert result.status.value == "escalated"
+    reviews = registry.list_reviews()
+    assert len(reviews) == 1
+    assert reviews[0].source_kind == "agent"
+    assert reviews[0].source_id == "ops_supervisor"
+    assert reviews[0].trigger_status == "escalated"
+    assert any(topic == "reviews" for topic, _ in clients.published)
     await bus.close()
 
 
@@ -360,4 +403,31 @@ async def test_kernel_runs_seeded_workflow_through_workflow_state_machine() -> N
         "triage_confirmed_incident",
     }
     assert registry.list_workflow_runs()[0].execution_id == result.workflow_execution.execution_id
+    await bus.close()
+
+
+@pytest.mark.asyncio
+async def test_kernel_queues_single_review_for_escalated_workflow() -> None:
+    clients = EscalatingClients()
+    bus = InMemoryEventBus()
+    registry = AgentRegistry(
+        seed_agents=build_default_agents(),
+        seed_tools=build_default_tools(),
+        seed_tasks=build_default_tasks(),
+        seed_workflows=build_default_workflows(),
+    )
+    await bus.connect()
+    orchestrator = KernelOrchestrator(clients, bus, "aether-kernel")  # type: ignore[arg-type]
+
+    workflow = registry.get_workflow("supervise_and_triage_incident")
+    assert workflow is not None
+
+    result = await orchestrator.run_workflow(registry, workflow, WorkflowRunRequest())
+
+    assert result.workflow_execution.status.value == "escalated"
+    reviews = registry.list_reviews()
+    assert len(reviews) == 1
+    assert reviews[0].source_kind == "workflow"
+    assert reviews[0].source_id == "supervise_and_triage_incident"
+    assert reviews[0].trigger_status == "escalated"
     await bus.close()

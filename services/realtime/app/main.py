@@ -39,6 +39,7 @@ class BroadcastHub:
             "task_runs": [],
             "workflows": [],
             "workflow_runs": [],
+            "reviews": [],
         }
         self._lock = asyncio.Lock()
 
@@ -101,7 +102,7 @@ async def lifespan(_: FastAPI):
         event_bus = InMemoryEventBus()
         await event_bus.connect()
 
-    for topic in ("streams", "fusion", "memory", "reasoning", "alerts", "dashboard"):
+    for topic in ("streams", "fusion", "memory", "reasoning", "alerts", "reviews", "dashboard"):
         bus_tasks.append(asyncio.create_task(consume_topic(topic, event_bus)))
     yield
     for task in bus_tasks:

@@ -16,6 +16,9 @@ from .models import (
     AgentRunStatus,
     AgentRunSummary,
     KernelPipelineRequest,
+    ReviewQueueItem,
+    ReviewQueueStatus,
+    ReviewResolveRequest,
     StreamSpec,
     TaskCreateRequest,
     TaskExecutionRecord,
@@ -85,6 +88,7 @@ class AgentRegistry:
         self._runs: deque[AgentRunResult] = deque(maxlen=50)
         self._task_runs: deque[TaskExecutionRecord] = deque(maxlen=100)
         self._workflow_runs: deque[WorkflowExecutionRecord] = deque(maxlen=50)
+        self._review_queue: deque[ReviewQueueItem] = deque(maxlen=100)
 
         for tool in seed_tools or []:
             self._tools[tool.tool_id] = tool
@@ -318,6 +322,55 @@ class AgentRegistry:
     def record_run(self, result: AgentRunResult) -> AgentRunResult:
         self._runs.appendleft(result)
         return result
+
+    def queue_review(
+        self,
+        *,
+        source_kind: str,
+        source_id: str,
+        source_name: str,
+        run_id: str,
+        title: str,
+        summary: str,
+        trigger_status: str,
+        governance_action: str | None = None,
+        risk_level: str = "medium",
+        metadata: dict[str, object] | None = None,
+    ) -> ReviewQueueItem:
+        review = ReviewQueueItem(
+            review_id=f"rev_{uuid4().hex[:8]}",
+            source_kind=source_kind,
+            source_id=source_id,
+            source_name=source_name,
+            run_id=run_id,
+            title=title,
+            summary=summary,
+            trigger_status=trigger_status,
+            governance_action=governance_action,
+            risk_level=risk_level.lower(),
+            metadata=metadata or {},
+        )
+        self._review_queue.appendleft(review)
+        return review
+
+    def list_reviews(self) -> list[ReviewQueueItem]:
+        return list(self._review_queue)
+
+    def get_review(self, review_id: str) -> ReviewQueueItem | None:
+        return next((review for review in self._review_queue if review.review_id == review_id), None)
+
+    def resolve_review(self, review_id: str, request: ReviewResolveRequest) -> ReviewQueueItem | None:
+        review = self.get_review(review_id)
+        if review is None:
+            return None
+
+        review.status = ReviewQueueStatus.resolved
+        review.resolution = request.resolution
+        review.resolution_notes = request.resolution_notes
+        review.reviewed_by = request.reviewed_by
+        review.resolved_at = utc_now()
+        review.updated_at = utc_now()
+        return review
 
     def list_runs(self) -> list[AgentRunSummary]:
         return [

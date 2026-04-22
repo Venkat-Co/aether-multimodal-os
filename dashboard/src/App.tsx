@@ -17,6 +17,7 @@ type DashboardState = {
   task_runs: Array<Record<string, unknown>>;
   workflows: Array<Record<string, unknown>>;
   workflow_runs: Array<Record<string, unknown>>;
+  reviews: Array<Record<string, unknown>>;
   latest_action?: Record<string, unknown>;
 };
 
@@ -73,6 +74,7 @@ const initialState: DashboardState = {
   task_runs: [],
   workflows: [],
   workflow_runs: [],
+  reviews: [],
 };
 
 const orbitalNodes: Array<{ position: [number, number, number]; color: string; scale: number }> = [
@@ -593,6 +595,37 @@ function summarizeWorkflowRun(item: Record<string, unknown>, nowMs: number): Ins
   };
 }
 
+function summarizeReviewItem(item: Record<string, unknown>, nowMs: number): InsightModel {
+  const status = textValue(item["status"]) ?? "pending";
+  const triggerStatus = textValue(item["trigger_status"]) ?? status;
+  const governanceAction = textValue(item["governance_action"]) ?? "REVIEW";
+  const sourceKind = humanizeToken(textValue(item["source_kind"]) ?? "runtime");
+  const riskLevel = humanizeToken(textValue(item["risk_level"]) ?? "medium");
+  const tone: Tone =
+    status === "resolved"
+      ? "mint"
+      : triggerStatus === "blocked" || governanceAction === "BLOCK"
+        ? "red"
+        : "amber";
+
+  return {
+    lane: status === "resolved" ? "Resolved" : `${sourceKind} Review`,
+    title: textValue(item["title"]) ?? textValue(item["source_name"]) ?? "Review queue item",
+    summary: truncateText(
+      textValue(item["summary"]) ?? "Human review is required before continuing the operator loop.",
+      112,
+    ),
+    meta: [
+      textValue(item["review_id"]) ?? "review",
+      `Risk ${riskLevel}`,
+      `Trigger ${humanizeToken(triggerStatus)}`,
+    ],
+    tone,
+    timestamp: formatClock(item["resolved_at"] ?? item["created_at"]),
+    relativeTime: formatRelativeTime(item["resolved_at"] ?? item["created_at"], nowMs),
+  };
+}
+
 function buildActivityTimeline(state: DashboardState, nowMs: number): ActivityModel[] {
   const items: ActivityModel[] = [];
 
@@ -708,6 +741,26 @@ function buildActivityTimeline(state: DashboardState, nowMs: number): ActivityMo
             : "mint",
       timestamp: formatClock(record["completed_at"] ?? record["started_at"]),
       sortKey: timestampMillis(record["completed_at"] ?? record["started_at"]),
+    });
+  }
+
+  for (const item of state.reviews.slice(-3)) {
+    const record = asRecord(item);
+    items.push({
+      lane: "Human Queue",
+      title: truncateText(
+        `${textValue(record["source_name"]) ?? "Review item"} · ${humanizeToken(textValue(record["status"]) ?? "pending")}`,
+        78,
+      ),
+      detail: formatRelativeTime(record["resolved_at"] ?? record["created_at"], nowMs),
+      tone:
+        textValue(record["status"]) === "resolved"
+          ? "mint"
+          : textValue(record["trigger_status"]) === "blocked" || textValue(record["governance_action"]) === "BLOCK"
+            ? "red"
+            : "amber",
+      timestamp: formatClock(record["resolved_at"] ?? record["created_at"]),
+      sortKey: timestampMillis(record["resolved_at"] ?? record["created_at"]),
     });
   }
 
@@ -904,6 +957,7 @@ export default function App() {
   const taskRunCards = state.task_runs.slice(-4).map((item) => summarizeTaskRun(item, nowMs));
   const workflowCards = state.workflows.slice(-4).map((item) => summarizeWorkflowTemplate(item, nowMs));
   const workflowRunCards = state.workflow_runs.slice(-4).map((item) => summarizeWorkflowRun(item, nowMs));
+  const reviewCards = state.reviews.slice(-4).map((item) => summarizeReviewItem(item, nowMs));
   const fusionCards = state.fusion.slice(-4).map((item) => summarizeFusion(item, nowMs));
   const activityTimeline = buildActivityTimeline(state, nowMs);
   const latestReasoning = reasoningCards[reasoningCards.length - 1];
@@ -913,6 +967,7 @@ export default function App() {
   const latestAgentRun = agentRunCards[agentRunCards.length - 1];
   const latestTaskRun = taskRunCards[taskRunCards.length - 1];
   const latestWorkflowRun = workflowRunCards[workflowRunCards.length - 1];
+  const latestReview = reviewCards[reviewCards.length - 1];
   const latestAction = asRecord(state.latest_action);
   const latestDecision = asRecord(latestAction["decision"]);
   const latestResult = asRecord(latestAction["result"]);
@@ -1002,6 +1057,7 @@ export default function App() {
               <span className="inline-pill">Agents {state.agents.length}</span>
               <span className="inline-pill">Tasks {state.tasks.length}</span>
               <span className="inline-pill">Workflows {state.workflows.length}</span>
+              <span className="inline-pill">Human Queue {state.reviews.length}</span>
               <span className="inline-pill">Events {activityTimeline.length}</span>
               <span className="inline-pill">Action Loop {textValue(latestResult["status"]) ?? "idle"}</span>
             </div>
@@ -1172,6 +1228,29 @@ export default function App() {
                   .map((item, index) => <InsightCard key={`${item.lane}-${item.timestamp}-${index}`} item={item} featured={index === 0} />)
               ) : (
                 <EmptyState title="No governance alerts" body="Safety blocks, escalations, and allows will appear here with cleaner operator summaries." />
+              )}
+            </div>
+          </article>
+
+          <article className="panel review-panel">
+            <div className="panel-topline">
+              <div>
+                <span className="section-kicker">Human Oversight</span>
+                <h2>Review queue and approvals</h2>
+              </div>
+              <span className="panel-meta">{state.reviews.length} review items</span>
+            </div>
+
+            <div className="insight-stack">
+              {reviewCards.length > 0 ? (
+                reviewCards
+                  .slice()
+                  .reverse()
+                  .map((item, index) => <InsightCard key={`${item.lane}-${item.timestamp}-${index}`} item={item} featured={index === 0} />)
+              ) : latestReview ? (
+                <InsightCard item={latestReview} featured />
+              ) : (
+                <EmptyState title="Human queue empty" body="Blocked and escalated runs will create operator review items here." />
               )}
             </div>
           </article>

@@ -14,6 +14,7 @@ from .models import (
     AgentRunResult,
     KernelPipelineRequest,
     KernelPipelineResult,
+    ReviewQueueItem,
     TaskRunRequest,
     TaskRunResult,
     TaskTemplate,
@@ -48,6 +49,19 @@ class KernelOrchestrator:
             if state.get("buffered_packets", 0) >= minimum_packets:
                 return
             await asyncio.sleep(0.1)
+
+    async def _publish_review_item(self, review_item: ReviewQueueItem) -> None:
+        payload = review_item.model_dump(mode="json")
+        try:
+            await self.event_bus.publish("reviews", payload, source=self.service_name)
+            if not self.event_bus.distributed:
+                await self.clients.publish("reviews", payload)
+        except Exception:
+            await self.clients.publish("reviews", payload)
+
+    @staticmethod
+    def _should_queue_review(status: str) -> bool:
+        return status in {"blocked", "escalated", "failed"}
 
     def _build_reasoning_state(
         self, packets: list[dict[str, Any]], fused_event: dict[str, Any], overrides: dict[str, Any]
@@ -225,7 +239,7 @@ class KernelOrchestrator:
         )
 
     async def run_agent(
-        self, registry: AgentRegistry, agent: AgentDefinition, request: AgentRunRequest
+        self, registry: AgentRegistry, agent: AgentDefinition, request: AgentRunRequest, queue_review: bool = True
     ) -> AgentRunResult:
         started_at = datetime.now(tz=UTC)
         await self._publish_bus_event(
@@ -247,6 +261,25 @@ class KernelOrchestrator:
             pipeline_result=pipeline_result,
         )
         registry.record_run(run_result)
+        if queue_review and self._should_queue_review(run_result.status.value):
+            decision = run_result.pipeline_result.governance_decision
+            review_item = registry.queue_review(
+                source_kind="agent",
+                source_id=agent.agent_id,
+                source_name=agent.name,
+                run_id=run_result.run_id,
+                title=f"{agent.name} requires operator review",
+                summary=decision.get("reasoning", "Governed agent run requires human oversight."),
+                trigger_status=run_result.status.value,
+                governance_action=run_result.governance_action,
+                risk_level=str(decision.get("risk_level", "medium")),
+                metadata={
+                    "decision_id": decision.get("decision_id"),
+                    "query": pipeline_request.query,
+                    "reasoning_mode": pipeline_request.reasoning_mode.value,
+                },
+            )
+            await self._publish_review_item(review_item)
         await self._publish_bus_event(
             "kernel.events.agent_run_completed",
             {
@@ -258,7 +291,9 @@ class KernelOrchestrator:
         )
         return run_result
 
-    async def run_task(self, registry: AgentRegistry, task: TaskTemplate, request: TaskRunRequest) -> TaskRunResult:
+    async def run_task(
+        self, registry: AgentRegistry, task: TaskTemplate, request: TaskRunRequest, queue_review: bool = True
+    ) -> TaskRunResult:
         agent = registry.get_agent(task.agent_id)
         if agent is None:
             raise ValueError(f"Agent '{task.agent_id}' not found for task '{task.task_id}'")
@@ -277,13 +312,32 @@ class KernelOrchestrator:
 
         try:
             agent_request = registry.build_agent_run_request_from_task(task, request, tool)
-            agent_run = await self.run_agent(registry, agent, agent_request)
+            agent_run = await self.run_agent(registry, agent, agent_request, queue_review=False)
             registry.complete_task_execution(
                 execution,
                 governance_action=agent_run.governance_action,
                 detail=f"Task completed via agent {agent.name} with governance action {agent_run.governance_action}.",
                 agent_run_id=agent_run.run_id,
             )
+            if queue_review and self._should_queue_review(execution.status.value):
+                decision = agent_run.pipeline_result.governance_decision
+                review_item = registry.queue_review(
+                    source_kind="task",
+                    source_id=task.task_id,
+                    source_name=task.name,
+                    run_id=execution.execution_id,
+                    title=f"{task.name} requires operator review",
+                    summary=execution.detail,
+                    trigger_status=execution.status.value,
+                    governance_action=execution.governance_action,
+                    risk_level=str(decision.get("risk_level", "medium")),
+                    metadata={
+                        "agent_id": agent.agent_id,
+                        "agent_run_id": agent_run.run_id,
+                        "decision_id": decision.get("decision_id"),
+                    },
+                )
+                await self._publish_review_item(review_item)
             await self._publish_bus_event(
                 "kernel.events.task_completed",
                 {
@@ -297,6 +351,20 @@ class KernelOrchestrator:
             return TaskRunResult(task_execution=execution, agent_run=agent_run)
         except Exception as exc:
             registry.fail_task_execution(execution, detail=f"Task failed before completion: {exc}")
+            if queue_review and self._should_queue_review(execution.status.value):
+                review_item = registry.queue_review(
+                    source_kind="task",
+                    source_id=task.task_id,
+                    source_name=task.name,
+                    run_id=execution.execution_id,
+                    title=f"{task.name} failed and requires operator review",
+                    summary=execution.detail,
+                    trigger_status=execution.status.value,
+                    governance_action=execution.governance_action,
+                    risk_level="high",
+                    metadata={"agent_id": agent.agent_id},
+                )
+                await self._publish_review_item(review_item)
             await self._publish_bus_event(
                 "kernel.events.task_failed",
                 {
@@ -341,7 +409,7 @@ class KernelOrchestrator:
                 reasoning_state_overrides=request.task_reasoning_overrides.get(task.task_id, {}),
                 window_center=request.window_center,
             )
-            task_result = await self.run_task(registry, task, task_request)
+            task_result = await self.run_task(registry, task, task_request, queue_review=False)
             return step, task_result
 
         while remaining_steps:
@@ -356,6 +424,22 @@ class KernelOrchestrator:
                     execution,
                     detail="Workflow halted because no dependency-ready steps were available.",
                 )
+                review_item = registry.queue_review(
+                    source_kind="workflow",
+                    source_id=workflow.workflow_id,
+                    source_name=workflow.name,
+                    run_id=execution.execution_id,
+                    title=f"{workflow.name} failed and requires operator review",
+                    summary=execution.detail,
+                    trigger_status=execution.status.value,
+                    governance_action=execution.governance_action,
+                    risk_level="high",
+                    metadata={
+                        "completed_steps": execution.completed_step_ids,
+                        "step_count": execution.step_count,
+                    },
+                )
+                await self._publish_review_item(review_item)
                 await self._publish_bus_event(
                     "kernel.events.workflow_failed",
                     {
@@ -377,6 +461,7 @@ class KernelOrchestrator:
             terminal_detail = "Workflow completed all configured steps."
             terminal_task_execution_id: str | None = None
             terminal_step_id: str | None = None
+            terminal_governance_action: str | None = None
 
             for result in results:
                 if isinstance(result, Exception):
@@ -384,6 +469,22 @@ class KernelOrchestrator:
                         execution,
                         detail=f"Workflow failed during parallel step execution: {result}",
                     )
+                    review_item = registry.queue_review(
+                        source_kind="workflow",
+                        source_id=workflow.workflow_id,
+                        source_name=workflow.name,
+                        run_id=execution.execution_id,
+                        title=f"{workflow.name} failed and requires operator review",
+                        summary=execution.detail,
+                        trigger_status=execution.status.value,
+                        governance_action=execution.governance_action,
+                        risk_level="high",
+                        metadata={
+                            "completed_steps": execution.completed_step_ids,
+                            "step_count": execution.step_count,
+                        },
+                    )
+                    await self._publish_review_item(review_item)
                     await self._publish_bus_event(
                         "kernel.events.workflow_failed",
                         {
@@ -438,6 +539,7 @@ class KernelOrchestrator:
                     terminal_detail = f"Workflow stopped after step {step.step_id} due to status {workflow_status.value}."
                     terminal_task_execution_id = task_result.task_execution.execution_id
                     terminal_step_id = step.step_id
+                    terminal_governance_action = last_governance_action
 
             if stop_triggered:
                 registry.complete_workflow_execution(
@@ -445,9 +547,31 @@ class KernelOrchestrator:
                     status=terminal_status,
                     detail=terminal_detail,
                     task_execution_id=terminal_task_execution_id,
-                    governance_action=last_governance_action,
+                    governance_action=terminal_governance_action,
                     completed_step_id=terminal_step_id,
                 )
+                if self._should_queue_review(execution.status.value):
+                    risk_level = "medium"
+                    if task_runs and task_runs[-1].agent_run is not None:
+                        risk_level = str(
+                            task_runs[-1].agent_run.pipeline_result.governance_decision.get("risk_level", "medium")
+                        )
+                    review_item = registry.queue_review(
+                        source_kind="workflow",
+                        source_id=workflow.workflow_id,
+                        source_name=workflow.name,
+                        run_id=execution.execution_id,
+                        title=f"{workflow.name} requires operator review",
+                        summary=execution.detail,
+                        trigger_status=execution.status.value,
+                        governance_action=terminal_governance_action,
+                        risk_level=risk_level,
+                        metadata={
+                            "completed_steps": execution.completed_step_ids,
+                            "step_count": execution.step_count,
+                        },
+                    )
+                    await self._publish_review_item(review_item)
                 await self._publish_bus_event(
                     "kernel.events.workflow_completed",
                     {
@@ -472,6 +596,26 @@ class KernelOrchestrator:
             governance_action=last_governance_action,
             completed_step_id=steps[-1].step_id if steps else None,
         )
+        if self._should_queue_review(execution.status.value):
+            risk_level = "medium"
+            if task_runs and task_runs[-1].agent_run is not None:
+                risk_level = str(task_runs[-1].agent_run.pipeline_result.governance_decision.get("risk_level", "medium"))
+            review_item = registry.queue_review(
+                source_kind="workflow",
+                source_id=workflow.workflow_id,
+                source_name=workflow.name,
+                run_id=execution.execution_id,
+                title=f"{workflow.name} requires operator review",
+                summary=execution.detail,
+                trigger_status=execution.status.value,
+                governance_action=last_governance_action,
+                risk_level=risk_level,
+                metadata={
+                    "completed_steps": execution.completed_step_ids,
+                    "step_count": execution.step_count,
+                },
+            )
+            await self._publish_review_item(review_item)
         await self._publish_bus_event(
             "kernel.events.workflow_completed",
             {

@@ -305,6 +305,27 @@
       ]
     }
   ],
+  "reviews": [
+    {
+      "review_id": "rev_pages_demo_01",
+      "status": "pending",
+      "source_kind": "workflow",
+      "source_id": "supervise_and_triage_incident",
+      "source_name": "Supervise And Triage Incident",
+      "run_id": "wkfrun_pages_demo_01",
+      "title": "Supervise And Triage Incident requires operator review",
+      "summary": "The monitoring branch elevated thermal instability before incident triage completed, so an operator review item was opened for supervised follow-through.",
+      "trigger_status": "escalated",
+      "governance_action": "ESCALATE",
+      "risk_level": "high",
+      "created_at": "2026-04-21T19:15:05Z",
+      "updated_at": "2026-04-21T19:15:05Z",
+      "metadata": {
+        "completed_steps": ["detect_line_instability", "assess_sensor_branch"],
+        "step_count": 3
+      }
+    }
+  ],
   "latest_action": {
     "decision": {
       "timestamp": "2026-04-21T19:15:03Z",

@@ -315,6 +315,38 @@ class WorkflowRunResult(BaseModel):
     task_runs: list[TaskRunResult] = Field(default_factory=list)
 
 
+class ReviewQueueStatus(str, Enum):
+    pending = "pending"
+    resolved = "resolved"
+
+
+class ReviewQueueItem(BaseModel):
+    review_id: str
+    status: ReviewQueueStatus = ReviewQueueStatus.pending
+    source_kind: str
+    source_id: str
+    source_name: str
+    run_id: str
+    title: str
+    summary: str
+    trigger_status: str
+    governance_action: str | None = None
+    risk_level: str = "medium"
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(tz=UTC))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(tz=UTC))
+    resolved_at: datetime | None = None
+    resolution: str | None = None
+    resolution_notes: str | None = None
+    reviewed_by: str | None = None
+
+
+class ReviewResolveRequest(BaseModel):
+    resolution: str = "acknowledged"
+    resolution_notes: str | None = None
+    reviewed_by: str | None = None
+
+
 class KernelPipelineRequest(BaseModel):
     query: str = "Assess current multimodal operating state"
     reasoning_mode: ReasoningMode = ReasoningMode.proactive
