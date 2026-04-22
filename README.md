@@ -41,6 +41,7 @@ AETHER is implemented as a service-oriented system with a premium operator conso
 - **Shared contracts** live in `packages/aether_core` so services speak a common language
 - **Event-driven architecture** supports in-memory, Redis Streams, and Kafka-plus-Redis transport paths
 - **Hybrid persistence** allows memory to remain local for demos while also supporting PostgreSQL/pgvector and Neo4j-backed operation
+- **Durable kernel control plane** persists agents, tools, tasks, workflows, runs, and review queue state into PostgreSQL so orchestration survives restarts
 - **React + Three.js** powers the command-center dashboard
 - **Docker Compose and Helm** support local development and a production-oriented deployment path
 - **GitHub Actions and GitHub Pages** provide automated validation and a public demo surface
@@ -132,7 +133,9 @@ proto                       gRPC contracts
 - Set `AETHER_EVENT_BUS_BACKEND` to `memory`, `redis_streams`, or `kafka_redis`
 - Local Docker Compose is prewired for Redis and Kafka through [.env.example](/Users/venkatreddymittapalli/Documents/Codex/2026-04-21-here-is-your-premium-end-to/.env.example)
 - Memory backend status is available at `GET /api/v1/memory/backends`
+- Kernel backend status is available at `GET /api/v1/kernel/backends`
 - When the event bus is distributed, ingestion publishes packet events onto `streams` and fusion consumes them automatically before `fuse_window`
+- When PostgreSQL is available, the kernel stores a durable control-plane snapshot so agents, task runs, workflow runs, and review decisions are restored after restart
 
 ## Public Demo
 

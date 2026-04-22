@@ -30,6 +30,7 @@
 
 - Confirm the event bus mode with `AETHER_EVENT_BUS_BACKEND` in your runtime environment.
 - Check memory persistence readiness at `GET /api/v1/memory/backends`.
+- Check kernel control-plane persistence at `GET /api/v1/kernel/backends`.
 - Check fusion packet intake with `GET /api/v1/fusion/buffer`.
 - If Redis or Kafka are unavailable, the services fall back to in-process behavior for local continuity.
 
@@ -39,6 +40,7 @@
 - If action dispatch fails repeatedly, inspect `GET /api/v1/actions/dead-letter`.
 - If the dashboard is stale, confirm the realtime gateway is reachable on port `8007`.
 - If the end-to-end loop is stalled, confirm the kernel service is reachable on port `8008`.
+- If agents, task runs, workflows, or reviews do not survive a restart, inspect `GET /api/v1/kernel/backends`.
 - If memory is not persisting durably, inspect `GET /api/v1/memory/backends`.
 - If Prometheus is empty, confirm `/metrics` is reachable on each service.
 - Use `make logs` to tail the stack logs during diagnosis.

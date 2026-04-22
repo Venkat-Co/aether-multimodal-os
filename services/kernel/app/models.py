@@ -392,6 +392,19 @@ class KernelPipelineResult(BaseModel):
     action_result: dict[str, Any] | None = None
 
 
+class ControlPlaneStateSnapshot(BaseModel):
+    schema_version: int = 1
+    agents: list[AgentDefinition] = Field(default_factory=list)
+    tools: list[ToolDefinition] = Field(default_factory=list)
+    tasks: list[TaskTemplate] = Field(default_factory=list)
+    workflows: list[WorkflowTemplate] = Field(default_factory=list)
+    agent_runs: list[AgentRunResult] = Field(default_factory=list)
+    task_runs: list[TaskExecutionRecord] = Field(default_factory=list)
+    workflow_runs: list[WorkflowExecutionRecord] = Field(default_factory=list)
+    reviews: list[ReviewQueueItem] = Field(default_factory=list)
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(tz=UTC))
+
+
 AgentRunResult.model_rebuild()
 TaskRunResult.model_rebuild()
 WorkflowRunResult.model_rebuild()

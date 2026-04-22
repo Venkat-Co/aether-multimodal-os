@@ -123,6 +123,15 @@ class DistributedInMemoryEventBus(InMemoryEventBus):
     distributed = True
 
 
+class RecordingPersistence:
+    def __init__(self) -> None:
+        self.snapshots = []
+
+    async def save_snapshot(self, snapshot):
+        self.snapshots.append(snapshot)
+        return True
+
+
 @pytest.mark.asyncio
 async def test_kernel_orchestrates_end_to_end_pipeline() -> None:
     clients = FakeClients()
@@ -473,4 +482,73 @@ async def test_kernel_can_resolve_review_and_rerun_agent() -> None:
     assert resolution.replay.status == "completed"
     assert len(registry.list_runs()) == 2
     assert any(topic == "reviews" for topic, _ in replay_clients.published)
+    await bus.close()
+
+
+@pytest.mark.asyncio
+async def test_registry_can_hydrate_persisted_control_plane_state() -> None:
+    clients = EscalatingClients()
+    bus = InMemoryEventBus()
+    source_registry = AgentRegistry(
+        seed_agents=build_default_agents(),
+        seed_tools=build_default_tools(),
+        seed_tasks=build_default_tasks(),
+        seed_workflows=build_default_workflows(),
+    )
+    await bus.connect()
+    orchestrator = KernelOrchestrator(clients, bus, "aether-kernel")  # type: ignore[arg-type]
+
+    workflow = source_registry.get_workflow("supervise_and_triage_incident")
+    assert workflow is not None
+
+    result = await orchestrator.run_workflow(source_registry, workflow, WorkflowRunRequest())
+    snapshot = source_registry.export_state()
+
+    restored_registry = AgentRegistry()
+    restored_registry.hydrate_state(snapshot, merge=False)
+
+    assert result.workflow_execution.status.value == "escalated"
+    assert restored_registry.get_agent("ops_supervisor") is not None
+    assert restored_registry.get_task("watch_line_three") is not None
+    assert restored_registry.get_workflow("supervise_and_triage_incident") is not None
+    assert len(restored_registry.list_runs()) >= 1
+    assert len(restored_registry.list_task_runs()) >= 1
+    assert len(restored_registry.list_workflow_runs()) == 1
+    assert len(restored_registry.list_reviews()) == 1
+    await bus.close()
+
+
+@pytest.mark.asyncio
+async def test_kernel_persists_snapshot_after_review_resolution() -> None:
+    clients = EscalatingClients()
+    bus = InMemoryEventBus()
+    registry = AgentRegistry(
+        seed_agents=build_default_agents(),
+        seed_tools=build_default_tools(),
+        seed_tasks=build_default_tasks(),
+        seed_workflows=build_default_workflows(),
+    )
+    persistence = RecordingPersistence()
+    await bus.connect()
+    orchestrator = KernelOrchestrator(
+        clients,
+        bus,
+        "aether-kernel",
+        persistence=persistence,  # type: ignore[arg-type]
+    )
+
+    agent = registry.get_agent("ops_supervisor")
+    assert agent is not None
+
+    await orchestrator.run_agent(registry, agent, AgentRunRequest())
+    review = registry.list_reviews()[0]
+    result = await orchestrator.resolve_review(
+        registry,
+        review.review_id,
+        ReviewResolveRequest(resolution="approved", reviewed_by="operator_001"),
+    )
+
+    assert len(persistence.snapshots) >= 2
+    assert persistence.snapshots[-1].reviews[0].status.value == "resolved"
+    assert result.review.reviewed_by == "operator_001"
     await bus.close()

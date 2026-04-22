@@ -35,6 +35,7 @@ from .models import (
     WorkflowTemplate,
 )
 from .orchestrator import KernelOrchestrator
+from .persistence import KernelPersistenceStore
 from .registry import AgentRegistry, build_default_agents, build_default_tasks, build_default_tools, build_default_workflows
 
 settings = get_settings("aether-kernel")
@@ -42,13 +43,24 @@ logger = configure_logging(settings.service_name, settings.log_level)
 
 clients = AetherServiceClients(settings)
 event_bus = build_event_bus(settings)
-orchestrator = KernelOrchestrator(clients, event_bus, settings.service_name)
+persistence = KernelPersistenceStore(settings)
+orchestrator = KernelOrchestrator(clients, event_bus, settings.service_name, persistence=persistence)
 registry = AgentRegistry(
     seed_agents=build_default_agents(),
     seed_tools=build_default_tools(),
     seed_tasks=build_default_tasks(),
     seed_workflows=build_default_workflows(),
 )
+
+
+async def persist_runtime_state() -> None:
+    try:
+        persisted = await persistence.save_snapshot(registry.export_state())
+    except Exception as exc:
+        logger.warning("Kernel control plane persistence failed", extra={"detail": str(exc)})
+        return
+    if not persisted:
+        logger.info("Kernel control plane persistence unavailable; continuing with in-memory registry")
 
 
 async def publish_runtime_snapshot() -> None:
@@ -70,6 +82,24 @@ async def publish_runtime_snapshot() -> None:
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     global event_bus
+    await persistence.initialize()
+    try:
+        snapshot = await persistence.load_snapshot()
+    except Exception as exc:
+        snapshot = None
+        logger.warning("Failed to load kernel control plane snapshot", extra={"detail": str(exc)})
+    if snapshot is not None:
+        registry.hydrate_state(snapshot, merge=True)
+        logger.info(
+            "Hydrated kernel control plane snapshot",
+            extra={
+                "agents": len(snapshot.agents),
+                "tasks": len(snapshot.tasks),
+                "workflows": len(snapshot.workflows),
+                "reviews": len(snapshot.reviews),
+            },
+        )
+    await persist_runtime_state()
     try:
         await connect_event_bus_with_retry(
             event_bus,
@@ -88,6 +118,7 @@ async def lifespan(_: FastAPI):
     yield
     await event_bus.close()
     await clients.close()
+    await persistence.close()
 
 
 app = FastAPI(title="AETHER Kernel Service", version="1.0.0", lifespan=lifespan)
@@ -105,6 +136,11 @@ mount_metrics(app)
 @app.get("/healthz")
 async def healthcheck() -> dict[str, str]:
     return {"status": "ok", "service": settings.service_name}
+
+
+@app.get("/api/v1/kernel/backends")
+async def kernel_backends() -> dict[str, object]:
+    return persistence.backend_status
 
 
 @app.post("/api/v1/kernel/pipeline/run", response_model=KernelPipelineResult)
@@ -142,6 +178,7 @@ async def get_tool(tool_id: str) -> ToolDefinition:
 @app.post("/api/v1/kernel/tools", response_model=ToolDefinition)
 async def create_tool(request: ToolCreateRequest) -> ToolDefinition:
     tool = registry.create_tool(request)
+    await persist_runtime_state()
     logger.info("Registered kernel tool", extra={"tool_id": tool.tool_id, "name": tool.name})
     try:
         await publish_runtime_snapshot()
@@ -204,6 +241,7 @@ async def resolve_review(review_id: str, request: ReviewResolveRequest) -> Revie
 @app.post("/api/v1/kernel/agents", response_model=AgentDefinition)
 async def create_agent(request: AgentCreateRequest) -> AgentDefinition:
     agent = registry.create_agent(request)
+    await persist_runtime_state()
     logger.info("Registered kernel agent", extra={"agent_id": agent.agent_id, "name": agent.name})
     try:
         await publish_runtime_snapshot()
@@ -259,6 +297,7 @@ async def create_task(request: TaskCreateRequest) -> TaskTemplate:
     if request.tool_id is not None and registry.get_tool(request.tool_id) is None:
         raise HTTPException(status_code=404, detail=f"Tool '{request.tool_id}' not found")
     task = registry.create_task(request)
+    await persist_runtime_state()
     logger.info("Registered kernel task", extra={"task_id": task.task_id, "agent_id": task.agent_id})
     try:
         await publish_runtime_snapshot()
@@ -320,6 +359,7 @@ async def create_workflow(request: WorkflowCreateRequest) -> WorkflowTemplate:
         workflow = registry.create_workflow(request)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    await persist_runtime_state()
     logger.info("Registered kernel workflow", extra={"workflow_id": workflow.workflow_id, "name": workflow.name})
     try:
         await publish_runtime_snapshot()

@@ -15,6 +15,7 @@ from .models import (
     AgentRunResult,
     AgentRunStatus,
     AgentRunSummary,
+    ControlPlaneStateSnapshot,
     KernelPipelineRequest,
     ReviewQueueItem,
     ReviewQueueStatus,
@@ -37,6 +38,11 @@ from .models import (
     WorkflowStep,
     WorkflowTemplate,
 )
+
+AGENT_RUN_LIMIT = 50
+TASK_RUN_LIMIT = 100
+WORKFLOW_RUN_LIMIT = 50
+REVIEW_QUEUE_LIMIT = 100
 
 
 def utc_now() -> datetime:
@@ -85,10 +91,10 @@ class AgentRegistry:
         self._tools: dict[str, ToolDefinition] = {}
         self._tasks: dict[str, TaskTemplate] = {}
         self._workflows: dict[str, WorkflowTemplate] = {}
-        self._runs: deque[AgentRunResult] = deque(maxlen=50)
-        self._task_runs: deque[TaskExecutionRecord] = deque(maxlen=100)
-        self._workflow_runs: deque[WorkflowExecutionRecord] = deque(maxlen=50)
-        self._review_queue: deque[ReviewQueueItem] = deque(maxlen=100)
+        self._runs: deque[AgentRunResult] = deque(maxlen=AGENT_RUN_LIMIT)
+        self._task_runs: deque[TaskExecutionRecord] = deque(maxlen=TASK_RUN_LIMIT)
+        self._workflow_runs: deque[WorkflowExecutionRecord] = deque(maxlen=WORKFLOW_RUN_LIMIT)
+        self._review_queue: deque[ReviewQueueItem] = deque(maxlen=REVIEW_QUEUE_LIMIT)
 
         for tool in seed_tools or []:
             self._tools[tool.tool_id] = tool
@@ -103,6 +109,114 @@ class AgentRegistry:
 
         for workflow in seed_workflows or []:
             self._workflows[workflow.workflow_id] = workflow
+
+    def export_state(self) -> ControlPlaneStateSnapshot:
+        return ControlPlaneStateSnapshot(
+            agents=list(self._agents.values()),
+            tools=list(self._tools.values()),
+            tasks=list(self._tasks.values()),
+            workflows=list(self._workflows.values()),
+            agent_runs=list(self._runs),
+            task_runs=list(self._task_runs),
+            workflow_runs=list(self._workflow_runs),
+            reviews=list(self._review_queue),
+        )
+
+    def hydrate_state(self, snapshot: ControlPlaneStateSnapshot, merge: bool = True) -> None:
+        self._agents = self._merge_models(
+            current=self._agents.values(),
+            incoming=snapshot.agents,
+            key=lambda agent: agent.agent_id,
+            merge=merge,
+        )
+        self._tools = self._merge_models(
+            current=self._tools.values(),
+            incoming=snapshot.tools,
+            key=lambda tool: tool.tool_id,
+            merge=merge,
+        )
+        self._tasks = self._merge_models(
+            current=self._tasks.values(),
+            incoming=snapshot.tasks,
+            key=lambda task: task.task_id,
+            merge=merge,
+        )
+        self._workflows = self._merge_models(
+            current=self._workflows.values(),
+            incoming=snapshot.workflows,
+            key=lambda workflow: workflow.workflow_id,
+            merge=merge,
+        )
+
+        for agent in self._agents.values():
+            for tool in agent.tools:
+                self._tools.setdefault(tool.tool_id, tool_definition_from_binding(tool))
+
+        self._runs = deque(
+            self._merge_ordered_records(
+                current=list(self._runs),
+                incoming=snapshot.agent_runs,
+                key=lambda run: run.run_id,
+                merge=merge,
+            ),
+            maxlen=AGENT_RUN_LIMIT,
+        )
+        self._task_runs = deque(
+            self._merge_ordered_records(
+                current=list(self._task_runs),
+                incoming=snapshot.task_runs,
+                key=lambda run: run.execution_id,
+                merge=merge,
+            ),
+            maxlen=TASK_RUN_LIMIT,
+        )
+        self._workflow_runs = deque(
+            self._merge_ordered_records(
+                current=list(self._workflow_runs),
+                incoming=snapshot.workflow_runs,
+                key=lambda run: run.execution_id,
+                merge=merge,
+            ),
+            maxlen=WORKFLOW_RUN_LIMIT,
+        )
+        self._review_queue = deque(
+            self._merge_ordered_records(
+                current=list(self._review_queue),
+                incoming=snapshot.reviews,
+                key=lambda review: review.review_id,
+                merge=merge,
+            ),
+            maxlen=REVIEW_QUEUE_LIMIT,
+        )
+
+    @staticmethod
+    def _merge_models(current, incoming, key, merge: bool) -> dict[str, object]:
+        items = list(current) if merge else []
+        merged = {key(item): item for item in items}
+        for item in incoming:
+            merged[key(item)] = item
+        return merged
+
+    @staticmethod
+    def _merge_ordered_records(current, incoming, key, merge: bool):
+        if not merge:
+            return list(incoming)
+
+        merged = []
+        seen: set[str] = set()
+        for item in incoming:
+            identifier = key(item)
+            if identifier in seen:
+                continue
+            seen.add(identifier)
+            merged.append(item)
+        for item in current:
+            identifier = key(item)
+            if identifier in seen:
+                continue
+            seen.add(identifier)
+            merged.append(item)
+        return merged
 
     def workflow_steps(self, workflow: WorkflowTemplate) -> list[WorkflowStep]:
         if workflow.steps:

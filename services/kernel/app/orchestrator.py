@@ -27,14 +27,30 @@ from .models import (
     WorkflowStep,
     WorkflowTemplate,
 )
+from .persistence import KernelPersistenceStore
 from .registry import AgentRegistry, build_run_result
 
 
 class KernelOrchestrator:
-    def __init__(self, clients: AetherServiceClients, event_bus: EventBus, service_name: str) -> None:
+    def __init__(
+        self,
+        clients: AetherServiceClients,
+        event_bus: EventBus,
+        service_name: str,
+        persistence: KernelPersistenceStore | None = None,
+    ) -> None:
         self.clients = clients
         self.event_bus = event_bus
         self.service_name = service_name
+        self.persistence = persistence
+
+    async def _persist_registry(self, registry: AgentRegistry) -> None:
+        if self.persistence is None:
+            return
+        try:
+            await self.persistence.save_snapshot(registry.export_state())
+        except Exception:
+            return
 
     async def _publish_bus_event(self, topic: str, payload: dict[str, Any]) -> None:
         try:
@@ -135,6 +151,7 @@ class KernelOrchestrator:
             resolved_review.metadata["replay"] = replay.model_dump(mode="json")
             resolved_review.updated_at = datetime.now(tz=UTC)
 
+        await self._persist_registry(registry)
         await self._publish_review_item(resolved_review)
         await self._publish_bus_event(
             "kernel.events.review_resolved",
@@ -366,6 +383,7 @@ class KernelOrchestrator:
                 },
             )
             await self._publish_review_item(review_item)
+        await self._persist_registry(registry)
         await self._publish_bus_event(
             "kernel.events.agent_run_completed",
             {
@@ -386,6 +404,7 @@ class KernelOrchestrator:
 
         tool = registry.get_tool(request.tool_id or task.tool_id) if (request.tool_id or task.tool_id) else None
         execution = registry.start_task_execution(task, agent, tool)
+        await self._persist_registry(registry)
         await self._publish_bus_event(
             "kernel.events.task_started",
             {
@@ -425,6 +444,7 @@ class KernelOrchestrator:
                     },
                 )
                 await self._publish_review_item(review_item)
+            await self._persist_registry(registry)
             await self._publish_bus_event(
                 "kernel.events.task_completed",
                 {
@@ -455,6 +475,7 @@ class KernelOrchestrator:
                     },
                 )
                 await self._publish_review_item(review_item)
+            await self._persist_registry(registry)
             await self._publish_bus_event(
                 "kernel.events.task_failed",
                 {
@@ -471,6 +492,7 @@ class KernelOrchestrator:
     ) -> WorkflowRunResult:
         steps = registry.workflow_steps(workflow)
         execution = registry.start_workflow_execution(workflow)
+        await self._persist_registry(registry)
         await self._publish_bus_event(
             "kernel.events.workflow_started",
             {
@@ -531,6 +553,7 @@ class KernelOrchestrator:
                     },
                 )
                 await self._publish_review_item(review_item)
+                await self._persist_registry(registry)
                 await self._publish_bus_event(
                     "kernel.events.workflow_failed",
                     {
@@ -577,6 +600,7 @@ class KernelOrchestrator:
                         },
                     )
                     await self._publish_review_item(review_item)
+                    await self._persist_registry(registry)
                     await self._publish_bus_event(
                         "kernel.events.workflow_failed",
                         {
@@ -624,6 +648,7 @@ class KernelOrchestrator:
                         "governance_action": last_governance_action,
                     },
                 )
+                await self._persist_registry(registry)
 
                 if workflow_status in workflow.stop_on_statuses:
                     stop_triggered = True
@@ -665,6 +690,7 @@ class KernelOrchestrator:
                         },
                     )
                     await self._publish_review_item(review_item)
+                await self._persist_registry(registry)
                 await self._publish_bus_event(
                     "kernel.events.workflow_completed",
                     {
@@ -710,6 +736,7 @@ class KernelOrchestrator:
                 },
             )
             await self._publish_review_item(review_item)
+        await self._persist_registry(registry)
         await self._publish_bus_event(
             "kernel.events.workflow_completed",
             {
