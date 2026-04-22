@@ -65,6 +65,17 @@ type OperatorProfile = {
   source: string;
 };
 
+type OperatorSessionModel = {
+  session_token: string;
+  operator_name: string;
+  operator_role: string;
+  review_source: string;
+  permissions: string[];
+  trusted: boolean;
+  issued_at: string;
+  expires_at: string;
+};
+
 const initialState: DashboardState = {
   generated_at: new Date().toISOString(),
   status: "connecting",
@@ -84,6 +95,7 @@ const initialState: DashboardState = {
 };
 
 const operatorStorageKey = "aether.operator.profile";
+const operatorSessionStorageKey = "aether.operator.session";
 const defaultOperatorProfile: OperatorProfile = {
   name: "operator_001",
   role: "mission_controller",
@@ -194,6 +206,34 @@ function loadOperatorProfile(): OperatorProfile {
   }
 }
 
+function loadOperatorSession(): OperatorSessionModel | null {
+  try {
+    const raw = window.localStorage.getItem(operatorSessionStorageKey);
+    if (!raw) {
+      return null;
+    }
+    const parsed = JSON.parse(raw) as Partial<OperatorSessionModel>;
+    const sessionToken = textValue(parsed.session_token);
+    const operatorName = textValue(parsed.operator_name);
+    const operatorRole = textValue(parsed.operator_role);
+    if (!sessionToken || !operatorName || !operatorRole) {
+      return null;
+    }
+    return {
+      session_token: sessionToken,
+      operator_name: operatorName,
+      operator_role: operatorRole,
+      review_source: textValue(parsed.review_source) ?? defaultOperatorProfile.source,
+      permissions: Array.isArray(parsed.permissions) ? parsed.permissions.filter((item): item is string => typeof item === "string") : [],
+      trusted: parsed.trusted !== false,
+      issued_at: textValue(parsed.issued_at) ?? new Date().toISOString(),
+      expires_at: textValue(parsed.expires_at) ?? new Date().toISOString(),
+    };
+  } catch {
+    return null;
+  }
+}
+
 function truncateText(value: string, maxLength: number): string {
   if (value.length <= maxLength) {
     return value;
@@ -269,6 +309,19 @@ function toneForSocketStatus(socketStatus: string): Tone {
   }
   if (socketStatus === "degraded" || socketStatus === "connecting") {
     return "amber";
+  }
+  return "red";
+}
+
+function toneForSessionStatus(sessionStatus: string): Tone {
+  if (sessionStatus === "verified") {
+    return "mint";
+  }
+  if (sessionStatus === "authorizing" || sessionStatus === "stale") {
+    return "amber";
+  }
+  if (sessionStatus === "offline" || sessionStatus === "idle") {
+    return "slate";
   }
   return "red";
 }
@@ -1033,16 +1086,25 @@ function EmptyState({ title, body }: { title: string; body: string }) {
 
 function OperatorConsole({
   profile,
+  sessionStatus,
+  sessionModel,
   onChange,
 }: {
   profile: OperatorProfile;
+  sessionStatus: string;
+  sessionModel: OperatorSessionModel | null;
   onChange: (field: keyof OperatorProfile, value: string) => void;
 }) {
+  const permissionCount = sessionModel?.permissions.length ?? 0;
   return (
     <div className="operator-console">
       <div className="operator-console-copy">
         <span>Operator Identity</span>
         <strong>{profile.name}</strong>
+      </div>
+      <div className="operator-console-status">
+        <StatusBadge label={sessionStatus} tone={toneForSessionStatus(sessionStatus)} />
+        <span>{permissionCount > 0 ? `${permissionCount} permissions` : "No verified permissions"}</span>
       </div>
       <div className="operator-console-grid">
         <label className="operator-field">
@@ -1076,6 +1138,7 @@ function ReviewQueueCard({
   actionLabel,
   actionMessage,
   canResolve,
+  resolveHint,
   onResolve,
 }: {
   item: Record<string, unknown>;
@@ -1083,6 +1146,7 @@ function ReviewQueueCard({
   actionLabel?: string;
   actionMessage?: string;
   canResolve: boolean;
+  resolveHint?: string;
   onResolve: (resolution: string, rerunSource: boolean) => Promise<void>;
 }) {
   const insight = summarizeReviewItem(item, nowMs);
@@ -1135,9 +1199,7 @@ function ReviewQueueCard({
         </div>
       ) : null}
       {actionMessage ? <div className="review-action-message">{actionMessage}</div> : null}
-      {!canResolve && isPending ? (
-        <div className="review-action-message">Review actions require a live kernel API and an operator identity.</div>
-      ) : null}
+      {!canResolve && isPending && resolveHint ? <div className="review-action-message">{resolveHint}</div> : null}
     </article>
   );
 }
@@ -1146,6 +1208,8 @@ export default function App() {
   const { state, socketStatus, nowMs } = useDashboardState();
   const apiBase = resolveApiBase();
   const [operatorProfile, setOperatorProfile] = useState<OperatorProfile>(() => loadOperatorProfile());
+  const [operatorSession, setOperatorSession] = useState<OperatorSessionModel | null>(() => loadOperatorSession());
+  const [operatorSessionStatus, setOperatorSessionStatus] = useState("idle");
   const [reviewActionState, setReviewActionState] = useState<Record<string, string>>({});
   const [reviewActionMessage, setReviewActionMessage] = useState<Record<string, string>>({});
   const [reviewOverrides, setReviewOverrides] = useState<Record<string, Record<string, unknown>>>({});
@@ -1181,13 +1245,79 @@ export default function App() {
   const activeModalities = Array.from(new Set(streamDirectory.map((stream) => stream.modality)));
   const socketTone = toneForSocketStatus(socketStatus);
   const hasOperatorIdentity = operatorProfile.name.trim().length > 0;
-  const canResolveReviews = Boolean(apiBase) && socketStatus !== "demo" && socketStatus !== "offline" && hasOperatorIdentity;
+  const canResolveReviews =
+    Boolean(apiBase) &&
+    socketStatus !== "demo" &&
+    socketStatus !== "offline" &&
+    hasOperatorIdentity &&
+    operatorSessionStatus === "verified" &&
+    Boolean(operatorSession?.session_token);
+  const reviewResolveHint =
+    socketStatus === "demo" || socketStatus === "offline"
+      ? "Review actions require a live kernel API."
+      : !hasOperatorIdentity
+        ? "Add an operator callsign to establish a session."
+        : operatorSessionStatus === "authorizing"
+          ? "Establishing signed operator session..."
+          : operatorSessionStatus === "verified"
+            ? undefined
+            : "Review actions require a verified operator session.";
   const latestFusionConfidence = normalizeConfidence(numberValue(asRecord(state.fusion[state.fusion.length - 1])["confidence"]));
   const latestDecisionAction = textValue(latestDecision["action_taken"])?.toUpperCase() ?? "ALLOW";
 
   useEffect(() => {
     window.localStorage.setItem(operatorStorageKey, JSON.stringify(operatorProfile));
   }, [operatorProfile]);
+
+  useEffect(() => {
+    if (!apiBase || !hasOperatorIdentity) {
+      setOperatorSessionStatus(socketStatus === "offline" ? "offline" : "idle");
+      return;
+    }
+
+    let disposed = false;
+
+    async function establishOperatorSession() {
+      setOperatorSessionStatus("authorizing");
+      try {
+        const response = await fetch(`${apiBase}/api/v1/kernel/operator/session`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            operator_name: operatorProfile.name,
+            operator_role: operatorProfile.role,
+            review_source: operatorProfile.source,
+          }),
+        });
+
+        if (!response.ok) {
+          throw new Error(`operator-session-${response.status}`);
+        }
+
+        const payload = (await response.json()) as OperatorSessionModel;
+        if (disposed) {
+          return;
+        }
+
+        setOperatorSession(payload);
+        setOperatorSessionStatus("verified");
+        window.localStorage.setItem(operatorSessionStorageKey, JSON.stringify(payload));
+      } catch {
+        if (disposed) {
+          return;
+        }
+        setOperatorSession(null);
+        setOperatorSessionStatus(socketStatus === "offline" ? "offline" : "denied");
+        window.localStorage.removeItem(operatorSessionStorageKey);
+      }
+    }
+
+    void establishOperatorSession();
+
+    return () => {
+      disposed = true;
+    };
+  }, [apiBase, hasOperatorIdentity, operatorProfile.name, operatorProfile.role, operatorProfile.source, socketStatus]);
 
   function handleOperatorChange(field: keyof OperatorProfile, value: string): void {
     setOperatorProfile((current) => ({
@@ -1210,6 +1340,7 @@ export default function App() {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
+          "X-Aether-Session": operatorSession?.session_token ?? "",
           "X-Aether-Operator": operatorProfile.name,
           "X-Aether-Operator-Role": operatorProfile.role,
           "X-Aether-Review-Source": operatorProfile.source,
@@ -1310,7 +1441,12 @@ export default function App() {
 
         <div className="topbar-tray">
           <StatusBadge label={socketStatus} tone={socketTone} />
-          <OperatorConsole profile={operatorProfile} onChange={handleOperatorChange} />
+          <OperatorConsole
+            profile={operatorProfile}
+            sessionStatus={operatorSessionStatus}
+            sessionModel={operatorSession}
+            onChange={handleOperatorChange}
+          />
           <div className="micro-panel">
             <span>Realtime Sync</span>
             <strong>{formatRelativeTime(state.generated_at, nowMs)}</strong>
@@ -1336,6 +1472,7 @@ export default function App() {
               <span className="inline-pill">Kernel {humanizeToken(state.status)}</span>
               <span className="inline-pill">Operator {operatorProfile.name}</span>
               <span className="inline-pill">Role {humanizeToken(operatorProfile.role)}</span>
+              <span className="inline-pill">Session {humanizeToken(operatorSessionStatus)}</span>
               <span className="inline-pill">Modalities {activeModalities.length}</span>
               <span className="inline-pill">Agents {state.agents.length}</span>
               <span className="inline-pill">Tasks {state.tasks.length}</span>
@@ -1538,6 +1675,7 @@ export default function App() {
                         item={record}
                         nowMs={nowMs}
                         canResolve={canResolveReviews}
+                        resolveHint={reviewResolveHint}
                         actionLabel={reviewActionState[reviewId]}
                         actionMessage={reviewActionMessage[reviewId]}
                         onResolve={(resolution, rerunSource) => handleResolveReview(reviewId, resolution, rerunSource)}

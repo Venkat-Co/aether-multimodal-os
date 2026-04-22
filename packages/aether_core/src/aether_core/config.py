@@ -24,6 +24,7 @@ class AetherSettings(BaseSettings):
     )
     vault_addr: str = Field(default="http://localhost:8200")
     otel_exporter_otlp_endpoint: str = Field(default="http://localhost:4317")
+    operator_session_ttl_seconds: int = Field(default=43200)
 
     reasoning_trigger_threshold: float = Field(default=0.8)
     fusion_window_seconds: int = Field(default=5)

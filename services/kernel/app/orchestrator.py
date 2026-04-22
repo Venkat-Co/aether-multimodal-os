@@ -82,6 +82,14 @@ class KernelOrchestrator:
     def _should_queue_review(status: str) -> bool:
         return status in {"blocked", "escalated", "failed"}
 
+    @staticmethod
+    def _prepare_replay_payload(payload: dict[str, Any], publish_realtime: bool) -> dict[str, Any]:
+        replay_payload = dict(payload)
+        replay_payload["publish_realtime"] = publish_realtime
+        # Replays need a fresh execution window so fusion operates on newly emitted packets.
+        replay_payload["window_center"] = datetime.now(tz=UTC).isoformat()
+        return replay_payload
+
     async def _run_review_replay(
         self, registry: AgentRegistry, review_item: ReviewQueueItem, request: ReviewResolveRequest
     ) -> ReviewReplaySummary:
@@ -89,8 +97,10 @@ class KernelOrchestrator:
             agent = registry.get_agent(review_item.source_id)
             if agent is None:
                 raise ValueError(f"Agent '{review_item.source_id}' not found for review replay")
-            payload = dict(review_item.metadata.get("agent_request", {}))
-            payload["publish_realtime"] = request.publish_realtime
+            payload = self._prepare_replay_payload(
+                dict(review_item.metadata.get("agent_request", {})),
+                request.publish_realtime,
+            )
             replay_request = AgentRunRequest.model_validate(payload)
             replay_result = await self.run_agent(registry, agent, replay_request)
             return ReviewReplaySummary(
@@ -104,8 +114,10 @@ class KernelOrchestrator:
             task = registry.get_task(review_item.source_id)
             if task is None:
                 raise ValueError(f"Task '{review_item.source_id}' not found for review replay")
-            payload = dict(review_item.metadata.get("task_request", {}))
-            payload["publish_realtime"] = request.publish_realtime
+            payload = self._prepare_replay_payload(
+                dict(review_item.metadata.get("task_request", {})),
+                request.publish_realtime,
+            )
             replay_request = TaskRunRequest.model_validate(payload)
             replay_result = await self.run_task(registry, task, replay_request)
             return ReviewReplaySummary(
@@ -119,8 +131,10 @@ class KernelOrchestrator:
             workflow = registry.get_workflow(review_item.source_id)
             if workflow is None:
                 raise ValueError(f"Workflow '{review_item.source_id}' not found for review replay")
-            payload = dict(review_item.metadata.get("workflow_request", {}))
-            payload["publish_realtime"] = request.publish_realtime
+            payload = self._prepare_replay_payload(
+                dict(review_item.metadata.get("workflow_request", {})),
+                request.publish_realtime,
+            )
             replay_request = WorkflowRunRequest.model_validate(payload)
             replay_result = await self.run_workflow(registry, workflow, replay_request)
             return ReviewReplaySummary(

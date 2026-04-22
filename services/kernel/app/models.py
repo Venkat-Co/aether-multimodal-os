@@ -373,6 +373,23 @@ class ReviewResolveResult(BaseModel):
     replay: ReviewReplaySummary | None = None
 
 
+class OperatorSessionRequest(BaseModel):
+    operator_name: str
+    operator_role: str = "mission_controller"
+    review_source: str = "dashboard"
+
+
+class OperatorSession(BaseModel):
+    session_token: str
+    operator_name: str
+    operator_role: str
+    review_source: str
+    permissions: list[str] = Field(default_factory=list)
+    trusted: bool = True
+    issued_at: datetime
+    expires_at: datetime
+
+
 class KernelPipelineRequest(BaseModel):
     query: str = "Assess current multimodal operating state"
     reasoning_mode: ReasoningMode = ReasoningMode.proactive

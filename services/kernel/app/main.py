@@ -18,6 +18,8 @@ from .models import (
     AgentRunSummary,
     KernelPipelineRequest,
     KernelPipelineResult,
+    OperatorSession,
+    OperatorSessionRequest,
     ReviewQueueItem,
     ReviewResolveRequest,
     ReviewResolveResult,
@@ -37,6 +39,7 @@ from .models import (
 from .orchestrator import KernelOrchestrator
 from .persistence import KernelPersistenceStore
 from .registry import AgentRegistry, build_default_agents, build_default_tasks, build_default_tools, build_default_workflows
+from .security import OperatorIdentity, OperatorSessionManager, authorize_review_resolution
 
 settings = get_settings("aether-kernel")
 logger = configure_logging(settings.service_name, settings.log_level)
@@ -44,6 +47,7 @@ logger = configure_logging(settings.service_name, settings.log_level)
 clients = AetherServiceClients(settings)
 event_bus = build_event_bus(settings)
 persistence = KernelPersistenceStore(settings)
+session_manager = OperatorSessionManager(settings)
 orchestrator = KernelOrchestrator(clients, event_bus, settings.service_name, persistence=persistence)
 registry = AgentRegistry(
     seed_agents=build_default_agents(),
@@ -57,28 +61,48 @@ def resolve_operator_name(request_value: str | None, header_value: str | None) -
     return header_value or request_value or None
 
 
-def enrich_creator_request(request_model, operator_name: str | None):
-    if operator_name is None or getattr(request_model, "created_by", None):
+def enrich_creator_request(request_model, identity: OperatorIdentity | None):
+    if identity is None or getattr(request_model, "created_by", None):
         return request_model
-    return request_model.model_copy(update={"created_by": operator_name})
+    return request_model.model_copy(update={"created_by": identity.operator_name})
 
 
 def enrich_review_request(
     request: ReviewResolveRequest,
-    operator_name: str | None,
-    operator_role: str | None,
-    review_source: str | None,
+    identity: OperatorIdentity | None,
 ) -> ReviewResolveRequest:
     payload: dict[str, str] = {}
-    if request.reviewed_by is None and operator_name is not None:
-        payload["reviewed_by"] = operator_name
-    if request.reviewed_by_role is None and operator_role is not None:
-        payload["reviewed_by_role"] = operator_role
-    if request.review_source is None and review_source is not None:
-        payload["review_source"] = review_source
+    if identity is not None and request.reviewed_by is None:
+        payload["reviewed_by"] = identity.operator_name
+    if identity is not None and request.reviewed_by_role is None:
+        payload["reviewed_by_role"] = identity.operator_role
+    if identity is not None and request.review_source is None:
+        payload["review_source"] = identity.review_source
     if not payload:
         return request
     return request.model_copy(update=payload)
+
+
+def resolve_operator_identity(
+    *,
+    session_token: str | None,
+    request_operator_name: str | None,
+    request_operator_role: str | None,
+    request_review_source: str | None,
+) -> OperatorIdentity | None:
+    operator_name = resolve_operator_name(request_operator_name, None)
+    try:
+        identity = session_manager.resolve_identity(
+            session_token=session_token,
+            operator_name=operator_name,
+            operator_role=request_operator_role,
+            review_source=request_review_source,
+        )
+    except PermissionError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+    if identity is not None and not identity.trusted and settings.env == "production":
+        raise HTTPException(status_code=401, detail="Signed operator session required in production")
+    return identity
 
 
 async def persist_runtime_state() -> None:
@@ -171,6 +195,18 @@ async def kernel_backends() -> dict[str, object]:
     return persistence.backend_status
 
 
+@app.post("/api/v1/kernel/operator/session", response_model=OperatorSession)
+async def create_operator_session(request: OperatorSessionRequest) -> OperatorSession:
+    if not request.operator_name.strip():
+        raise HTTPException(status_code=400, detail="operator_name is required")
+    session = session_manager.create_session(request)
+    logger.info(
+        "Created operator session",
+        extra={"operator_name": session.operator_name, "operator_role": session.operator_role},
+    )
+    return session
+
+
 @app.post("/api/v1/kernel/pipeline/run", response_model=KernelPipelineResult)
 async def run_pipeline(request: KernelPipelineRequest) -> KernelPipelineResult:
     result = await orchestrator.run_pipeline(request)
@@ -207,8 +243,17 @@ async def get_tool(tool_id: str) -> ToolDefinition:
 async def create_tool(
     request: ToolCreateRequest,
     x_aether_operator: str | None = Header(default=None),
+    x_aether_operator_role: str | None = Header(default=None),
+    x_aether_review_source: str | None = Header(default=None),
+    x_aether_session: str | None = Header(default=None),
 ) -> ToolDefinition:
-    request = enrich_creator_request(request, resolve_operator_name(request.created_by, x_aether_operator))
+    identity = resolve_operator_identity(
+        session_token=x_aether_session,
+        request_operator_name=resolve_operator_name(request.created_by, x_aether_operator),
+        request_operator_role=x_aether_operator_role,
+        request_review_source=x_aether_review_source,
+    )
+    request = enrich_creator_request(request, identity)
     tool = registry.create_tool(request)
     await persist_runtime_state()
     logger.info("Registered kernel tool", extra={"tool_id": tool.tool_id, "name": tool.name})
@@ -249,8 +294,31 @@ async def resolve_review(
     x_aether_operator: str | None = Header(default=None),
     x_aether_operator_role: str | None = Header(default=None),
     x_aether_review_source: str | None = Header(default=None),
+    x_aether_session: str | None = Header(default=None),
 ) -> ReviewResolveResult:
-    request = enrich_review_request(request, x_aether_operator, x_aether_operator_role, x_aether_review_source)
+    try:
+        identity = resolve_operator_identity(
+            session_token=x_aether_session,
+            request_operator_name=resolve_operator_name(request.reviewed_by, x_aether_operator),
+            request_operator_role=request.reviewed_by_role or x_aether_operator_role,
+            request_review_source=request.review_source or x_aether_review_source,
+        )
+    except PermissionError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+
+    if identity is None:
+        raise HTTPException(status_code=401, detail="Operator session or identity is required")
+
+    review = registry.get_review(review_id)
+    if review is None:
+        raise HTTPException(status_code=404, detail=f"Review item '{review_id}' not found")
+
+    try:
+        authorize_review_resolution(review, request, identity)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+    request = enrich_review_request(request, identity)
     try:
         result = await orchestrator.resolve_review(registry, review_id, request)
     except ValueError as exc:
@@ -283,8 +351,17 @@ async def resolve_review(
 async def create_agent(
     request: AgentCreateRequest,
     x_aether_operator: str | None = Header(default=None),
+    x_aether_operator_role: str | None = Header(default=None),
+    x_aether_review_source: str | None = Header(default=None),
+    x_aether_session: str | None = Header(default=None),
 ) -> AgentDefinition:
-    request = enrich_creator_request(request, resolve_operator_name(request.created_by, x_aether_operator))
+    identity = resolve_operator_identity(
+        session_token=x_aether_session,
+        request_operator_name=resolve_operator_name(request.created_by, x_aether_operator),
+        request_operator_role=x_aether_operator_role,
+        request_review_source=x_aether_review_source,
+    )
+    request = enrich_creator_request(request, identity)
     agent = registry.create_agent(request)
     await persist_runtime_state()
     logger.info("Registered kernel agent", extra={"agent_id": agent.agent_id, "name": agent.name})
@@ -339,8 +416,17 @@ async def list_task_runs() -> list[TaskExecutionSummary]:
 async def create_task(
     request: TaskCreateRequest,
     x_aether_operator: str | None = Header(default=None),
+    x_aether_operator_role: str | None = Header(default=None),
+    x_aether_review_source: str | None = Header(default=None),
+    x_aether_session: str | None = Header(default=None),
 ) -> TaskTemplate:
-    request = enrich_creator_request(request, resolve_operator_name(request.created_by, x_aether_operator))
+    identity = resolve_operator_identity(
+        session_token=x_aether_session,
+        request_operator_name=resolve_operator_name(request.created_by, x_aether_operator),
+        request_operator_role=x_aether_operator_role,
+        request_review_source=x_aether_review_source,
+    )
+    request = enrich_creator_request(request, identity)
     if registry.get_agent(request.agent_id) is None:
         raise HTTPException(status_code=404, detail=f"Agent '{request.agent_id}' not found")
     if request.tool_id is not None and registry.get_tool(request.tool_id) is None:
@@ -399,8 +485,17 @@ async def list_workflow_runs() -> list[WorkflowExecutionSummary]:
 async def create_workflow(
     request: WorkflowCreateRequest,
     x_aether_operator: str | None = Header(default=None),
+    x_aether_operator_role: str | None = Header(default=None),
+    x_aether_review_source: str | None = Header(default=None),
+    x_aether_session: str | None = Header(default=None),
 ) -> WorkflowTemplate:
-    request = enrich_creator_request(request, resolve_operator_name(request.created_by, x_aether_operator))
+    identity = resolve_operator_identity(
+        session_token=x_aether_session,
+        request_operator_name=resolve_operator_name(request.created_by, x_aether_operator),
+        request_operator_role=x_aether_operator_role,
+        request_review_source=x_aether_review_source,
+    )
+    request = enrich_creator_request(request, identity)
     referenced_task_ids = [step.task_id for step in request.steps] if request.steps else request.task_ids
     if not referenced_task_ids:
         raise HTTPException(status_code=400, detail="Workflow must reference at least one task")

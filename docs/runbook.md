@@ -36,7 +36,8 @@
 
 ## Incident Handling
 
-- Review approvals can include `X-Aether-Operator`, `X-Aether-Operator-Role`, and `X-Aether-Review-Source` for operator attribution.
+- Review approvals can include `X-Aether-Session`, `X-Aether-Operator`, `X-Aether-Operator-Role`, and `X-Aether-Review-Source` for signed operator attribution.
+- Use `POST /api/v1/kernel/operator/session` to mint a signed local operator session before enabling browser-side approvals.
 - If governance blocks unexpectedly, inspect `GET /api/v1/governance/audit`.
 - If action dispatch fails repeatedly, inspect `GET /api/v1/actions/dead-letter`.
 - If the dashboard is stale, confirm the realtime gateway is reachable on port `8007`.

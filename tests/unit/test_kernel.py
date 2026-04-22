@@ -1,10 +1,15 @@
+from datetime import UTC, datetime
+
 import pytest
 
+from aether_core.config import AetherSettings
 from aether_core.event_bus import InMemoryEventBus
 from services.kernel.app.models import (
     AgentCreateRequest,
     AgentRunRequest,
     KernelPipelineRequest,
+    OperatorSessionRequest,
+    ReviewQueueItem,
     ReviewResolveRequest,
     StreamSpec,
     TaskCreateRequest,
@@ -16,6 +21,7 @@ from services.kernel.app.models import (
 )
 from services.kernel.app.orchestrator import KernelOrchestrator
 from services.kernel.app.registry import AgentRegistry, build_default_agents, build_default_tasks, build_default_tools, build_default_workflows
+from services.kernel.app.security import OperatorIdentity, OperatorSessionManager, authorize_review_resolution
 
 
 class FakeClients:
@@ -23,6 +29,7 @@ class FakeClients:
         self.published: list[tuple[str, dict]] = []
         self.ingest_calls = 0
         self.buffer_checks = 0
+        self.last_fused_window: str | None = None
 
     async def register_stream(self, payload):
         return {"status": "registered", **payload}
@@ -57,6 +64,7 @@ class FakeClients:
         return None
 
     async def fuse_window(self, window_center):
+        self.last_fused_window = window_center
         return {
             "event_id": "evt_001",
             "timestamp": window_center,
@@ -130,6 +138,81 @@ class RecordingPersistence:
     async def save_snapshot(self, snapshot):
         self.snapshots.append(snapshot)
         return True
+
+
+def test_operator_session_manager_signs_and_verifies_session() -> None:
+    settings = AetherSettings(service_name="aether-kernel", api_token="test-secret")
+    manager = OperatorSessionManager(settings)
+
+    session = manager.create_session(
+        OperatorSessionRequest(
+            operator_name="venkat_ops",
+            operator_role="shift_lead",
+            review_source="dashboard",
+        )
+    )
+    identity = manager.verify_session(session.session_token)
+
+    assert identity.trusted is True
+    assert identity.operator_name == "venkat_ops"
+    assert identity.operator_role == "shift_lead"
+    assert "reviews.resolve.high" in identity.permissions
+
+
+def test_authorize_review_resolution_rejects_operator_on_high_risk_rerun() -> None:
+    review = ReviewQueueItem(
+        review_id="rev_test",
+        source_kind="agent",
+        source_id="ops_supervisor",
+        source_name="Operations Supervisor",
+        run_id="agr_test",
+        title="Escalated review",
+        summary="Requires review",
+        trigger_status="escalated",
+        risk_level="high",
+    )
+    identity = OperatorIdentity(
+        operator_name="operator_001",
+        operator_role="operator",
+        review_source="dashboard",
+        permissions=["reviews.resolve.low_medium"],
+        trusted=True,
+    )
+
+    with pytest.raises(PermissionError, match="cannot replay"):
+        authorize_review_resolution(
+            review,
+            ReviewResolveRequest(resolution="approved", rerun_source=True),
+            identity,
+        )
+
+
+def test_authorize_review_resolution_allows_mission_controller_on_critical_review() -> None:
+    review = ReviewQueueItem(
+        review_id="rev_critical",
+        source_kind="agent",
+        source_id="ops_supervisor",
+        source_name="Operations Supervisor",
+        run_id="agr_critical",
+        title="Critical review",
+        summary="Critical review",
+        trigger_status="escalated",
+        risk_level="critical",
+        created_at=datetime.now(tz=UTC),
+    )
+    identity = OperatorIdentity(
+        operator_name="controller",
+        operator_role="mission_controller",
+        review_source="dashboard",
+        permissions=["reviews.resolve.critical", "reviews.rerun.critical"],
+        trusted=True,
+    )
+
+    authorize_review_resolution(
+        review,
+        ReviewResolveRequest(resolution="approved", rerun_source=True),
+        identity,
+    )
 
 
 @pytest.mark.asyncio
@@ -461,7 +544,8 @@ async def test_kernel_can_resolve_review_and_rerun_agent() -> None:
     agent = registry.get_agent("ops_supervisor")
     assert agent is not None
 
-    escalated_run = await orchestrator.run_agent(registry, agent, AgentRunRequest())
+    original_window = datetime(2026, 4, 21, 12, 0, tzinfo=UTC)
+    escalated_run = await orchestrator.run_agent(registry, agent, AgentRunRequest(window_center=original_window))
     assert escalated_run.status.value == "escalated"
     review = registry.list_reviews()[0]
 
@@ -488,6 +572,8 @@ async def test_kernel_can_resolve_review_and_rerun_agent() -> None:
     assert resolution.replay.source_kind == "agent"
     assert resolution.replay.status == "completed"
     assert len(registry.list_runs()) == 2
+    assert replay_clients.last_fused_window is not None
+    assert replay_clients.last_fused_window != original_window.isoformat()
     assert any(topic == "reviews" for topic, _ in replay_clients.published)
     await bus.close()
 
