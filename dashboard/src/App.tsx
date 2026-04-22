@@ -15,6 +15,8 @@ type DashboardState = {
   tools: Array<Record<string, unknown>>;
   tasks: Array<Record<string, unknown>>;
   task_runs: Array<Record<string, unknown>>;
+  workflows: Array<Record<string, unknown>>;
+  workflow_runs: Array<Record<string, unknown>>;
   latest_action?: Record<string, unknown>;
 };
 
@@ -69,6 +71,8 @@ const initialState: DashboardState = {
   tools: [],
   tasks: [],
   task_runs: [],
+  workflows: [],
+  workflow_runs: [],
 };
 
 const orbitalNodes: Array<{ position: [number, number, number]; color: string; scale: number }> = [
@@ -513,6 +517,60 @@ function summarizeTaskRun(item: Record<string, unknown>, nowMs: number): Insight
   };
 }
 
+function summarizeWorkflowTemplate(item: Record<string, unknown>, nowMs: number): InsightModel {
+  const taskIds = Array.isArray(item["task_ids"])
+    ? item["task_ids"].filter((taskId): taskId is string => typeof taskId === "string")
+    : [];
+  const tags = Array.isArray(item["tags"])
+    ? item["tags"].filter((tag): tag is string => typeof tag === "string").slice(0, 3)
+    : [];
+
+  return {
+    lane: "Workflow",
+    title: textValue(item["name"]) ?? textValue(item["workflow_id"]) ?? "Workflow template",
+    summary: truncateText(
+      textValue(item["description"]) ?? "Reusable workflow coordinates multiple governed task executions.",
+      112,
+    ),
+    meta: [
+      textValue(item["workflow_id"]) ?? "workflow",
+      `${taskIds.length} ${taskIds.length === 1 ? "task" : "tasks"}`,
+      tags.length > 0 ? tags.map(humanizeToken).join(" • ") : "Multi-step runtime",
+    ],
+    tone: "amber",
+    timestamp: formatClock(item["created_at"]),
+    relativeTime: formatRelativeTime(item["created_at"], nowMs),
+  };
+}
+
+function summarizeWorkflowRun(item: Record<string, unknown>, nowMs: number): InsightModel {
+  const status = textValue(item["status"]) ?? "completed";
+  const governanceCount = Array.isArray(item["governance_actions"]) ? item["governance_actions"].length : 0;
+  const tone: Tone =
+    status === "failed" || status === "blocked"
+      ? "red"
+      : status === "escalated" || status === "monitored" || status === "running"
+        ? "amber"
+        : "mint";
+
+  return {
+    lane: humanizeToken(status),
+    title: textValue(item["workflow_name"]) ?? textValue(item["workflow_id"]) ?? "Workflow execution completed",
+    summary: truncateText(
+      textValue(item["detail"]) ?? "Workflow coordinated multiple governed task executions.",
+      112,
+    ),
+    meta: [
+      textValue(item["execution_id"]) ?? "workflow-run",
+      `${governanceCount} governance signals`,
+      `${Array.isArray(item["task_execution_ids"]) ? item["task_execution_ids"].length : 0} task runs`,
+    ],
+    tone,
+    timestamp: formatClock(item["completed_at"] ?? item["started_at"]),
+    relativeTime: formatRelativeTime(item["completed_at"] ?? item["started_at"], nowMs),
+  };
+}
+
 function buildActivityTimeline(state: DashboardState, nowMs: number): ActivityModel[] {
   const items: ActivityModel[] = [];
 
@@ -597,6 +655,26 @@ function buildActivityTimeline(state: DashboardState, nowMs: number): ActivityMo
       lane: "Task Runtime",
       title: truncateText(
         `${textValue(record["task_name"]) ?? "Task"} · ${humanizeToken(textValue(record["status"]) ?? "completed")}`,
+        78,
+      ),
+      detail: formatRelativeTime(record["completed_at"] ?? record["started_at"], nowMs),
+      tone:
+        textValue(record["status"]) === "failed" || textValue(record["status"]) === "blocked"
+          ? "red"
+          : textValue(record["status"]) === "escalated" || textValue(record["status"]) === "monitored"
+            ? "amber"
+            : "mint",
+      timestamp: formatClock(record["completed_at"] ?? record["started_at"]),
+      sortKey: timestampMillis(record["completed_at"] ?? record["started_at"]),
+    });
+  }
+
+  for (const item of state.workflow_runs.slice(-3)) {
+    const record = asRecord(item);
+    items.push({
+      lane: "Workflow Runtime",
+      title: truncateText(
+        `${textValue(record["workflow_name"]) ?? "Workflow"} · ${humanizeToken(textValue(record["status"]) ?? "completed")}`,
         78,
       ),
       detail: formatRelativeTime(record["completed_at"] ?? record["started_at"], nowMs),
@@ -802,6 +880,8 @@ export default function App() {
   const toolCards = state.tools.slice(-4).map((item) => summarizeToolDefinition(item, nowMs));
   const taskCards = state.tasks.slice(-4).map((item) => summarizeTaskTemplate(item, nowMs));
   const taskRunCards = state.task_runs.slice(-4).map((item) => summarizeTaskRun(item, nowMs));
+  const workflowCards = state.workflows.slice(-4).map((item) => summarizeWorkflowTemplate(item, nowMs));
+  const workflowRunCards = state.workflow_runs.slice(-4).map((item) => summarizeWorkflowRun(item, nowMs));
   const fusionCards = state.fusion.slice(-4).map((item) => summarizeFusion(item, nowMs));
   const activityTimeline = buildActivityTimeline(state, nowMs);
   const latestReasoning = reasoningCards[reasoningCards.length - 1];
@@ -810,6 +890,7 @@ export default function App() {
   const latestFusion = fusionCards[fusionCards.length - 1];
   const latestAgentRun = agentRunCards[agentRunCards.length - 1];
   const latestTaskRun = taskRunCards[taskRunCards.length - 1];
+  const latestWorkflowRun = workflowRunCards[workflowRunCards.length - 1];
   const latestAction = asRecord(state.latest_action);
   const latestDecision = asRecord(latestAction["decision"]);
   const latestResult = asRecord(latestAction["result"]);
@@ -843,10 +924,12 @@ export default function App() {
       tone: toneForGovernanceAction(latestDecisionAction),
     },
     {
-      label: "Task Runtime",
-      value: String(state.tasks.length),
-      detail: latestTaskRun?.title ?? latestAgentRun?.title ?? `${state.tools.length} tools in registry`,
-      progress: clampProgress(state.task_runs.length > 0 ? state.task_runs.length / 6 : state.tasks.length / 4),
+      label: "Workflow Runtime",
+      value: String(state.workflows.length),
+      detail: latestWorkflowRun?.title ?? latestTaskRun?.title ?? `${state.tools.length} tools in registry`,
+      progress: clampProgress(
+        state.workflow_runs.length > 0 ? state.workflow_runs.length / 4 : state.workflows.length > 0 ? state.workflows.length / 3 : state.tasks.length / 4,
+      ),
       tone: "mint",
     },
   ];
@@ -896,6 +979,7 @@ export default function App() {
               <span className="inline-pill">Modalities {activeModalities.length}</span>
               <span className="inline-pill">Agents {state.agents.length}</span>
               <span className="inline-pill">Tasks {state.tasks.length}</span>
+              <span className="inline-pill">Workflows {state.workflows.length}</span>
               <span className="inline-pill">Events {activityTimeline.length}</span>
               <span className="inline-pill">Action Loop {textValue(latestResult["status"]) ?? "idle"}</span>
             </div>
@@ -1094,32 +1178,40 @@ export default function App() {
           <article className="panel agent-panel">
             <div className="panel-topline">
               <div>
-                <span className="section-kicker">Runtime Queue</span>
-                <h2>Tools, tasks, and governed executions</h2>
+                <span className="section-kicker">Workflow Runtime</span>
+                <h2>Workflows, tasks, and governed executions</h2>
               </div>
-              <span className="panel-meta">{state.task_runs.length} task runs · {state.tools.length} tools</span>
+              <span className="panel-meta">{state.workflow_runs.length} workflow runs · {state.tasks.length} tasks · {state.tools.length} tools</span>
             </div>
 
             <div className="insight-stack">
-              {taskRunCards.length > 0
-                ? taskRunCards
+              {workflowRunCards.length > 0
+                ? workflowRunCards
                     .slice()
                     .reverse()
                     .map((item, index) => <InsightCard key={`${item.lane}-${item.timestamp}-${index}`} item={item} featured={index === 0} />)
-                : taskCards.length > 0
-                  ? taskCards
+                : workflowCards.length > 0
+                  ? workflowCards
                       .map((item, index) => <InsightCard key={`${item.lane}-${item.timestamp}-${index}`} item={item} featured={index === 0} />)
-                  : toolCards.length > 0
-                    ? toolCards
+                  : taskRunCards.length > 0
+                    ? taskRunCards
+                        .slice()
+                        .reverse()
                         .map((item, index) => <InsightCard key={`${item.lane}-${item.timestamp}-${index}`} item={item} featured={index === 0} />)
-                    : agentRunCards.length > 0
-                      ? agentRunCards
+                    : taskCards.length > 0
+                      ? taskCards
+                      .map((item, index) => <InsightCard key={`${item.lane}-${item.timestamp}-${index}`} item={item} featured={index === 0} />)
+                      : toolCards.length > 0
+                        ? toolCards
+                        .map((item, index) => <InsightCard key={`${item.lane}-${item.timestamp}-${index}`} item={item} featured={index === 0} />)
+                        : agentRunCards.length > 0
+                          ? agentRunCards
                     .slice()
                     .reverse()
                     .map((item, index) => <InsightCard key={`${item.lane}-${item.timestamp}-${index}`} item={item} featured={index === 0} />)
-                      : agentCards.length > 0
-                        ? agentCards.map((item, index) => <InsightCard key={`${item.lane}-${item.timestamp}-${index}`} item={item} featured={index === 0} />)
-                        : <EmptyState title="Runtime registry offline" body="Register a tool or task to bring the orchestration runtime online." />}
+                          : agentCards.length > 0
+                            ? agentCards.map((item, index) => <InsightCard key={`${item.lane}-${item.timestamp}-${index}`} item={item} featured={index === 0} />)
+                            : <EmptyState title="Runtime registry offline" body="Register a workflow or task to bring the orchestration runtime online." />}
             </div>
           </article>
         </section>

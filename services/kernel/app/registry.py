@@ -26,6 +26,12 @@ from .models import (
     ToolBinding,
     ToolCreateRequest,
     ToolDefinition,
+    WorkflowCreateRequest,
+    WorkflowExecutionRecord,
+    WorkflowExecutionSummary,
+    WorkflowRunRequest,
+    WorkflowRunStatus,
+    WorkflowTemplate,
 )
 
 
@@ -69,12 +75,15 @@ class AgentRegistry:
         seed_agents: Iterable[AgentDefinition] | None = None,
         seed_tools: Iterable[ToolDefinition] | None = None,
         seed_tasks: Iterable[TaskTemplate] | None = None,
+        seed_workflows: Iterable[WorkflowTemplate] | None = None,
     ) -> None:
         self._agents: dict[str, AgentDefinition] = {}
         self._tools: dict[str, ToolDefinition] = {}
         self._tasks: dict[str, TaskTemplate] = {}
+        self._workflows: dict[str, WorkflowTemplate] = {}
         self._runs: deque[AgentRunResult] = deque(maxlen=50)
         self._task_runs: deque[TaskExecutionRecord] = deque(maxlen=100)
+        self._workflow_runs: deque[WorkflowExecutionRecord] = deque(maxlen=50)
 
         for tool in seed_tools or []:
             self._tools[tool.tool_id] = tool
@@ -86,6 +95,9 @@ class AgentRegistry:
 
         for task in seed_tasks or []:
             self._tasks[task.task_id] = task
+
+        for workflow in seed_workflows or []:
+            self._workflows[workflow.workflow_id] = workflow
 
     def list_agents(self) -> list[AgentDefinition]:
         return sorted(self._agents.values(), key=lambda agent: agent.name.lower())
@@ -121,6 +133,17 @@ class AgentRegistry:
         task = TaskTemplate(**request.model_dump())
         self._tasks[task.task_id] = task
         return task
+
+    def list_workflows(self) -> list[WorkflowTemplate]:
+        return sorted(self._workflows.values(), key=lambda workflow: workflow.name.lower())
+
+    def get_workflow(self, workflow_id: str) -> WorkflowTemplate | None:
+        return self._workflows.get(workflow_id)
+
+    def create_workflow(self, request: WorkflowCreateRequest) -> WorkflowTemplate:
+        workflow = WorkflowTemplate(**request.model_dump())
+        self._workflows[workflow.workflow_id] = workflow
+        return workflow
 
     def build_action_template_from_tool(self, tool: ToolDefinition | None) -> ActionTemplate | None:
         if tool is None:
@@ -196,6 +219,17 @@ class AgentRegistry:
         if action == "MONITOR":
             return TaskRunStatus.monitored
         return TaskRunStatus.completed
+
+    def workflow_status_from_task_status(self, task_status: TaskRunStatus) -> WorkflowRunStatus:
+        if task_status == TaskRunStatus.blocked:
+            return WorkflowRunStatus.blocked
+        if task_status == TaskRunStatus.escalated:
+            return WorkflowRunStatus.escalated
+        if task_status == TaskRunStatus.monitored:
+            return WorkflowRunStatus.monitored
+        if task_status == TaskRunStatus.failed:
+            return WorkflowRunStatus.failed
+        return WorkflowRunStatus.completed
 
     def record_run(self, result: AgentRunResult) -> AgentRunResult:
         self._runs.appendleft(result)
@@ -311,6 +345,101 @@ class AgentRegistry:
             for run in self._task_runs
         ]
 
+    def start_workflow_execution(self, workflow: WorkflowTemplate) -> WorkflowExecutionRecord:
+        execution = WorkflowExecutionRecord(
+            execution_id=f"wkfrun_{uuid4().hex[:8]}",
+            workflow_id=workflow.workflow_id,
+            workflow_name=workflow.name,
+            status=WorkflowRunStatus.pending,
+            started_at=utc_now(),
+            detail="Workflow accepted into the orchestration queue.",
+            state_history=[
+                {
+                    "status": WorkflowRunStatus.pending.value,
+                    "timestamp": utc_now().isoformat(),
+                    "detail": "Workflow accepted into the orchestration queue.",
+                }
+            ],
+        )
+        self._workflow_runs.appendleft(execution)
+        return self.transition_workflow_execution(
+            execution,
+            status=WorkflowRunStatus.running,
+            detail="Workflow is coordinating governed task execution.",
+        )
+
+    def transition_workflow_execution(
+        self,
+        execution: WorkflowExecutionRecord,
+        status: WorkflowRunStatus,
+        detail: str,
+        completed: bool = False,
+        task_execution_id: str | None = None,
+        governance_action: str | None = None,
+    ) -> WorkflowExecutionRecord:
+        execution.status = status
+        execution.detail = detail
+        if task_execution_id is not None and task_execution_id not in execution.task_execution_ids:
+            execution.task_execution_ids.append(task_execution_id)
+        if governance_action is not None:
+            execution.governance_actions.append(governance_action)
+        if completed:
+            execution.completed_at = utc_now()
+        execution.state_history.append(
+            {
+                "status": status.value,
+                "timestamp": utc_now().isoformat(),
+                "detail": detail,
+                "task_execution_id": task_execution_id,
+                "governance_action": governance_action,
+            }
+        )
+        return execution
+
+    def complete_workflow_execution(
+        self,
+        execution: WorkflowExecutionRecord,
+        status: WorkflowRunStatus,
+        detail: str,
+        task_execution_id: str | None = None,
+        governance_action: str | None = None,
+    ) -> WorkflowExecutionRecord:
+        return self.transition_workflow_execution(
+            execution,
+            status=status,
+            detail=detail,
+            completed=True,
+            task_execution_id=task_execution_id,
+            governance_action=governance_action,
+        )
+
+    def fail_workflow_execution(
+        self, execution: WorkflowExecutionRecord, detail: str, task_execution_id: str | None = None
+    ) -> WorkflowExecutionRecord:
+        return self.transition_workflow_execution(
+            execution,
+            status=WorkflowRunStatus.failed,
+            detail=detail,
+            completed=True,
+            task_execution_id=task_execution_id,
+        )
+
+    def list_workflow_runs(self) -> list[WorkflowExecutionSummary]:
+        return [
+            WorkflowExecutionSummary(
+                execution_id=run.execution_id,
+                workflow_id=run.workflow_id,
+                workflow_name=run.workflow_name,
+                status=run.status,
+                started_at=run.started_at,
+                completed_at=run.completed_at,
+                detail=run.detail,
+                task_execution_ids=run.task_execution_ids,
+                governance_actions=run.governance_actions,
+            )
+            for run in self._workflow_runs
+        ]
+
 
 def build_default_tools() -> list[ToolDefinition]:
     return [
@@ -409,6 +538,24 @@ def build_default_tasks() -> list[TaskTemplate]:
             tool_id="page_incident_channel",
             tags=["incident-response", "triage"],
         ),
+    ]
+
+
+def build_default_workflows() -> list[WorkflowTemplate]:
+    return [
+        WorkflowTemplate(
+            workflow_id="supervise_and_triage_incident",
+            name="Supervise And Triage Incident",
+            description="Detect early operational instability, then route the active incident through a governed triage pass.",
+            task_ids=["watch_line_three", "triage_active_incident"],
+            stop_on_statuses=[
+                WorkflowRunStatus.monitored,
+                WorkflowRunStatus.blocked,
+                WorkflowRunStatus.escalated,
+                WorkflowRunStatus.failed,
+            ],
+            tags=["operations", "incident-response", "workflow"],
+        )
     ]
 
 

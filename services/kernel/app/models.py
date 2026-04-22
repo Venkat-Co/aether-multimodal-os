@@ -226,6 +226,81 @@ class TaskRunResult(BaseModel):
     agent_run: AgentRunResult | None = None
 
 
+class WorkflowRunStatus(str, Enum):
+    pending = "pending"
+    running = "running"
+    completed = "completed"
+    blocked = "blocked"
+    escalated = "escalated"
+    monitored = "monitored"
+    failed = "failed"
+
+
+class WorkflowTemplate(BaseModel):
+    workflow_id: str
+    name: str
+    description: str
+    task_ids: list[str] = Field(default_factory=list)
+    stop_on_statuses: list[WorkflowRunStatus] = Field(
+        default_factory=lambda: [WorkflowRunStatus.blocked, WorkflowRunStatus.escalated, WorkflowRunStatus.failed]
+    )
+    tags: list[str] = Field(default_factory=list)
+    active: bool = True
+    created_at: datetime = Field(default_factory=lambda: datetime.now(tz=UTC))
+
+
+class WorkflowCreateRequest(BaseModel):
+    workflow_id: str
+    name: str
+    description: str
+    task_ids: list[str] = Field(default_factory=list)
+    stop_on_statuses: list[WorkflowRunStatus] = Field(
+        default_factory=lambda: [WorkflowRunStatus.blocked, WorkflowRunStatus.escalated, WorkflowRunStatus.failed]
+    )
+    tags: list[str] = Field(default_factory=list)
+    active: bool = True
+
+
+class WorkflowRunRequest(BaseModel):
+    publish_realtime: bool | None = None
+    register_streams: bool | None = None
+    default_packets_per_stream: int | None = None
+    task_query_overrides: dict[str, str] = Field(default_factory=dict)
+    task_tool_overrides: dict[str, str] = Field(default_factory=dict)
+    task_reasoning_overrides: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    window_center: datetime = Field(default_factory=lambda: datetime.now(tz=UTC))
+
+
+class WorkflowExecutionRecord(BaseModel):
+    execution_id: str
+    workflow_id: str
+    workflow_name: str
+    status: WorkflowRunStatus
+    started_at: datetime
+    completed_at: datetime | None = None
+    detail: str
+    task_execution_ids: list[str] = Field(default_factory=list)
+    governance_actions: list[str] = Field(default_factory=list)
+    state_history: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class WorkflowExecutionSummary(BaseModel):
+    execution_id: str
+    workflow_id: str
+    workflow_name: str
+    status: WorkflowRunStatus
+    started_at: datetime
+    completed_at: datetime | None = None
+    detail: str
+    task_execution_ids: list[str] = Field(default_factory=list)
+    governance_actions: list[str] = Field(default_factory=list)
+
+
+class WorkflowRunResult(BaseModel):
+    workflow_execution: WorkflowExecutionRecord
+    task_runs: list[TaskRunResult] = Field(default_factory=list)
+
+
 class KernelPipelineRequest(BaseModel):
     query: str = "Assess current multimodal operating state"
     reasoning_mode: ReasoningMode = ReasoningMode.proactive
@@ -259,3 +334,4 @@ class KernelPipelineResult(BaseModel):
 
 AgentRunResult.model_rebuild()
 TaskRunResult.model_rebuild()
+WorkflowRunResult.model_rebuild()

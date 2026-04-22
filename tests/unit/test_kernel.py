@@ -9,9 +9,11 @@ from services.kernel.app.models import (
     TaskCreateRequest,
     TaskRunRequest,
     ToolBinding,
+    WorkflowCreateRequest,
+    WorkflowRunRequest,
 )
 from services.kernel.app.orchestrator import KernelOrchestrator
-from services.kernel.app.registry import AgentRegistry, build_default_agents, build_default_tasks, build_default_tools
+from services.kernel.app.registry import AgentRegistry, build_default_agents, build_default_tasks, build_default_tools, build_default_workflows
 
 
 class FakeClients:
@@ -147,6 +149,7 @@ async def test_kernel_runs_seeded_agent_through_pipeline() -> None:
         seed_agents=build_default_agents(),
         seed_tools=build_default_tools(),
         seed_tasks=build_default_tasks(),
+        seed_workflows=build_default_workflows(),
     )
     await bus.connect()
     orchestrator = KernelOrchestrator(clients, bus, "aether-kernel")  # type: ignore[arg-type]
@@ -206,6 +209,7 @@ def test_task_registry_builds_agent_request_from_task_template() -> None:
     registry = AgentRegistry(
         seed_agents=build_default_agents(),
         seed_tools=build_default_tools(),
+        seed_workflows=build_default_workflows(),
     )
     task = registry.create_task(
         TaskCreateRequest(
@@ -241,6 +245,7 @@ async def test_kernel_runs_seeded_task_through_task_state_machine() -> None:
         seed_agents=build_default_agents(),
         seed_tools=build_default_tools(),
         seed_tasks=build_default_tasks(),
+        seed_workflows=build_default_workflows(),
     )
     await bus.connect()
     orchestrator = KernelOrchestrator(clients, bus, "aether-kernel")  # type: ignore[arg-type]
@@ -257,4 +262,51 @@ async def test_kernel_runs_seeded_task_through_task_state_machine() -> None:
     assert result.agent_run.agent_id == "ops_supervisor"
     assert len(result.task_execution.state_history) >= 3
     assert registry.list_task_runs()[0].execution_id == result.task_execution.execution_id
+    await bus.close()
+
+
+def test_registry_creates_workflow_template() -> None:
+    registry = AgentRegistry(
+        seed_agents=build_default_agents(),
+        seed_tools=build_default_tools(),
+        seed_tasks=build_default_tasks(),
+    )
+    workflow = registry.create_workflow(
+        WorkflowCreateRequest(
+            workflow_id="ops_recovery_loop",
+            name="Ops Recovery Loop",
+            description="Run monitoring and triage in sequence during recovery.",
+            task_ids=["watch_line_three", "triage_active_incident"],
+            tags=["workflow"],
+        )
+    )
+
+    assert workflow.workflow_id == "ops_recovery_loop"
+    assert registry.get_workflow("ops_recovery_loop") is not None
+    assert registry.list_workflows()[0].workflow_id in {"ops_recovery_loop", "supervise_and_triage_incident"}
+
+
+@pytest.mark.asyncio
+async def test_kernel_runs_seeded_workflow_through_workflow_state_machine() -> None:
+    clients = FakeClients()
+    bus = InMemoryEventBus()
+    registry = AgentRegistry(
+        seed_agents=build_default_agents(),
+        seed_tools=build_default_tools(),
+        seed_tasks=build_default_tasks(),
+        seed_workflows=build_default_workflows(),
+    )
+    await bus.connect()
+    orchestrator = KernelOrchestrator(clients, bus, "aether-kernel")  # type: ignore[arg-type]
+
+    workflow = registry.get_workflow("supervise_and_triage_incident")
+    assert workflow is not None
+
+    result = await orchestrator.run_workflow(registry, workflow, WorkflowRunRequest())
+
+    assert result.workflow_execution.workflow_id == "supervise_and_triage_incident"
+    assert result.workflow_execution.status.value in {"completed", "monitored"}
+    assert len(result.task_runs) >= 1
+    assert result.task_runs[0].task_execution.task_id == "watch_line_three"
+    assert registry.list_workflow_runs()[0].execution_id == result.workflow_execution.execution_id
     await bus.close()

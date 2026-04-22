@@ -24,9 +24,14 @@ from .models import (
     TaskTemplate,
     ToolCreateRequest,
     ToolDefinition,
+    WorkflowCreateRequest,
+    WorkflowExecutionSummary,
+    WorkflowRunRequest,
+    WorkflowRunResult,
+    WorkflowTemplate,
 )
 from .orchestrator import KernelOrchestrator
-from .registry import AgentRegistry, build_default_agents, build_default_tasks, build_default_tools
+from .registry import AgentRegistry, build_default_agents, build_default_tasks, build_default_tools, build_default_workflows
 
 settings = get_settings("aether-kernel")
 logger = configure_logging(settings.service_name, settings.log_level)
@@ -38,6 +43,7 @@ registry = AgentRegistry(
     seed_agents=build_default_agents(),
     seed_tools=build_default_tools(),
     seed_tasks=build_default_tasks(),
+    seed_workflows=build_default_workflows(),
 )
 
 
@@ -50,6 +56,8 @@ async def publish_runtime_snapshot() -> None:
             "tools": [tool.model_dump(mode="json") for tool in registry.list_tools()],
             "tasks": [task.model_dump(mode="json") for task in registry.list_tasks()],
             "task_runs": [run.model_dump(mode="json") for run in registry.list_task_runs()],
+            "workflows": [workflow.model_dump(mode="json") for workflow in registry.list_workflows()],
+            "workflow_runs": [run.model_dump(mode="json") for run in registry.list_workflow_runs()],
         },
     )
 
@@ -233,4 +241,57 @@ async def run_task(task_id: str, request: TaskRunRequest) -> TaskRunResult:
         await publish_runtime_snapshot()
     except Exception:
         logger.info("Realtime dashboard unavailable during task run publish", extra={"task_id": task.task_id})
+    return result
+
+
+@app.get("/api/v1/kernel/workflows", response_model=list[WorkflowTemplate])
+async def list_workflows() -> list[WorkflowTemplate]:
+    return registry.list_workflows()
+
+
+@app.get("/api/v1/kernel/workflows/runs", response_model=list[WorkflowExecutionSummary])
+async def list_workflow_runs() -> list[WorkflowExecutionSummary]:
+    return registry.list_workflow_runs()
+
+
+@app.post("/api/v1/kernel/workflows", response_model=WorkflowTemplate)
+async def create_workflow(request: WorkflowCreateRequest) -> WorkflowTemplate:
+    missing_tasks = [task_id for task_id in request.task_ids if registry.get_task(task_id) is None]
+    if missing_tasks:
+        raise HTTPException(status_code=404, detail=f"Tasks not found for workflow: {', '.join(missing_tasks)}")
+    workflow = registry.create_workflow(request)
+    logger.info("Registered kernel workflow", extra={"workflow_id": workflow.workflow_id, "name": workflow.name})
+    try:
+        await publish_runtime_snapshot()
+    except Exception:
+        logger.info("Realtime dashboard unavailable during workflow registration publish", extra={"workflow_id": workflow.workflow_id})
+    return workflow
+
+
+@app.get("/api/v1/kernel/workflows/{workflow_id}", response_model=WorkflowTemplate)
+async def get_workflow(workflow_id: str) -> WorkflowTemplate:
+    workflow = registry.get_workflow(workflow_id)
+    if workflow is None:
+        raise HTTPException(status_code=404, detail=f"Workflow '{workflow_id}' not found")
+    return workflow
+
+
+@app.post("/api/v1/kernel/workflows/{workflow_id}/runs", response_model=WorkflowRunResult)
+async def run_workflow(workflow_id: str, request: WorkflowRunRequest) -> WorkflowRunResult:
+    workflow = registry.get_workflow(workflow_id)
+    if workflow is None:
+        raise HTTPException(status_code=404, detail=f"Workflow '{workflow_id}' not found")
+    result = await orchestrator.run_workflow(registry, workflow, request)
+    logger.info(
+        "Completed workflow run",
+        extra={
+            "workflow_id": result.workflow_execution.workflow_id,
+            "execution_id": result.workflow_execution.execution_id,
+            "status": result.workflow_execution.status.value,
+        },
+    )
+    try:
+        await publish_runtime_snapshot()
+    except Exception:
+        logger.info("Realtime dashboard unavailable during workflow run publish", extra={"workflow_id": workflow.workflow_id})
     return result

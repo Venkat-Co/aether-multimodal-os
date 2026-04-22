@@ -164,6 +164,16 @@
       "tags": ["incident-response", "triage"]
     }
   ],
+  "workflows": [
+    {
+      "workflow_id": "supervise_and_triage_incident",
+      "name": "Supervise And Triage Incident",
+      "description": "Detect early operational instability, then route the active incident through a governed triage pass.",
+      "task_ids": ["watch_line_three", "triage_active_incident"],
+      "created_at": "2026-04-21T19:13:45Z",
+      "tags": ["operations", "incident-response", "workflow"]
+    }
+  ],
   "agent_runs": [
     {
       "run_id": "agr_pages_demo_01",
@@ -188,6 +198,19 @@
       "started_at": "2026-04-21T19:14:49Z",
       "completed_at": "2026-04-21T19:14:59Z",
       "detail": "Task completed via agent Operations Supervisor with governance action MONITOR."
+    }
+  ],
+  "workflow_runs": [
+    {
+      "execution_id": "wkfrun_pages_demo_01",
+      "workflow_id": "supervise_and_triage_incident",
+      "workflow_name": "Supervise And Triage Incident",
+      "status": "monitored",
+      "started_at": "2026-04-21T19:14:48Z",
+      "completed_at": "2026-04-21T19:14:59Z",
+      "detail": "Workflow stopped after task watch_line_three due to status monitored.",
+      "task_execution_ids": ["tskrun_pages_demo_01"],
+      "governance_actions": ["MONITOR"]
     }
   ],
   "latest_action": {

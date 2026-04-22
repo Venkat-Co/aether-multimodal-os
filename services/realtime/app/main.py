@@ -37,6 +37,8 @@ class BroadcastHub:
             "tools": [],
             "tasks": [],
             "task_runs": [],
+            "workflows": [],
+            "workflow_runs": [],
         }
         self._lock = asyncio.Lock()
 

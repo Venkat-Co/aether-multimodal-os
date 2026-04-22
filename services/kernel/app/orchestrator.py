@@ -17,6 +17,10 @@ from .models import (
     TaskRunRequest,
     TaskRunResult,
     TaskTemplate,
+    WorkflowRunRequest,
+    WorkflowRunResult,
+    WorkflowRunStatus,
+    WorkflowTemplate,
 )
 from .registry import AgentRegistry, build_run_result
 
@@ -302,3 +306,108 @@ class KernelOrchestrator:
                 },
             )
             raise
+
+    async def run_workflow(
+        self, registry: AgentRegistry, workflow: WorkflowTemplate, request: WorkflowRunRequest
+    ) -> WorkflowRunResult:
+        execution = registry.start_workflow_execution(workflow)
+        await self._publish_bus_event(
+            "kernel.events.workflow_started",
+            {
+                "workflow_id": workflow.workflow_id,
+                "execution_id": execution.execution_id,
+                "task_count": len(workflow.task_ids),
+            },
+        )
+
+        task_runs: list[TaskRunResult] = []
+        last_governance_action: str | None = None
+
+        for task_id in workflow.task_ids:
+            task = registry.get_task(task_id)
+            if task is None:
+                registry.fail_workflow_execution(
+                    execution,
+                    detail=f"Workflow halted because task '{task_id}' was not found.",
+                )
+                await self._publish_bus_event(
+                    "kernel.events.workflow_failed",
+                    {
+                        "workflow_id": workflow.workflow_id,
+                        "execution_id": execution.execution_id,
+                        "status": execution.status.value,
+                        "detail": execution.detail,
+                    },
+                )
+                raise ValueError(f"Task '{task_id}' not found for workflow '{workflow.workflow_id}'")
+
+            task_request = TaskRunRequest(
+                query=request.task_query_overrides.get(task.task_id),
+                tool_id=request.task_tool_overrides.get(task.task_id),
+                packets_per_stream=request.default_packets_per_stream,
+                publish_realtime=request.publish_realtime,
+                register_streams=request.register_streams,
+                reasoning_state_overrides=request.task_reasoning_overrides.get(task.task_id, {}),
+                window_center=request.window_center,
+            )
+            task_result = await self.run_task(registry, task, task_request)
+            task_runs.append(task_result)
+            last_governance_action = task_result.task_execution.governance_action
+            task_status = task_result.task_execution.status
+            workflow_status = registry.workflow_status_from_task_status(task_status)
+            registry.transition_workflow_execution(
+                execution,
+                status=WorkflowRunStatus.running,
+                detail=f"Task {task.task_id} completed with status {task_status.value}.",
+                task_execution_id=task_result.task_execution.execution_id,
+                governance_action=last_governance_action,
+            )
+            await self._publish_bus_event(
+                "kernel.events.workflow_task_completed",
+                {
+                    "workflow_id": workflow.workflow_id,
+                    "execution_id": execution.execution_id,
+                    "task_id": task.task_id,
+                    "task_execution_id": task_result.task_execution.execution_id,
+                    "task_status": task_status.value,
+                    "governance_action": last_governance_action,
+                },
+            )
+
+            if workflow_status in workflow.stop_on_statuses:
+                registry.complete_workflow_execution(
+                    execution,
+                    status=workflow_status,
+                    detail=f"Workflow stopped after task {task.task_id} due to status {workflow_status.value}.",
+                    task_execution_id=task_result.task_execution.execution_id,
+                    governance_action=last_governance_action,
+                )
+                await self._publish_bus_event(
+                    "kernel.events.workflow_completed",
+                    {
+                        "workflow_id": workflow.workflow_id,
+                        "execution_id": execution.execution_id,
+                        "status": execution.status.value,
+                        "detail": execution.detail,
+                    },
+                )
+                return WorkflowRunResult(workflow_execution=execution, task_runs=task_runs)
+
+        final_status = registry.workflow_status_from_task_status(task_runs[-1].task_execution.status) if task_runs else WorkflowRunStatus.completed
+        registry.complete_workflow_execution(
+            execution,
+            status=final_status,
+            detail="Workflow completed all configured tasks.",
+            task_execution_id=task_runs[-1].task_execution.execution_id if task_runs else None,
+            governance_action=last_governance_action,
+        )
+        await self._publish_bus_event(
+            "kernel.events.workflow_completed",
+            {
+                "workflow_id": workflow.workflow_id,
+                "execution_id": execution.execution_id,
+                "status": execution.status.value,
+                "detail": execution.detail,
+            },
+        )
+        return WorkflowRunResult(workflow_execution=execution, task_runs=task_runs)
