@@ -55,6 +55,15 @@
       "risk_level": "MEDIUM",
       "reasoning": "Confidence remains acceptable, but the anomaly pattern merits elevated monitoring and human review.",
       "confidence": 0.88
+    },
+    {
+      "decision_id": "gov_pages_demo_02",
+      "timestamp": "2026-04-21T19:15:03Z",
+      "rule_id": "DEFAULT_ALLOW",
+      "action_taken": "ALLOW",
+      "risk_level": "LOW",
+      "reasoning": "Both upstream monitoring branches completed, and the triage dispatch satisfied governance policy.",
+      "confidence": 0.84
     }
   ],
   "reasoning": [
@@ -74,6 +83,20 @@
         {
           "action_type": "notify",
           "target": "shift_supervisor"
+        }
+      ]
+    },
+    {
+      "reasoning_id": "rsn_pages_demo_02",
+      "timestamp": "2026-04-21T19:15:02Z",
+      "mode": "causal",
+      "summary": "Incident triage linked thermal drift and vibration acceleration before routing a governed response.",
+      "confidence": 0.86,
+      "predictions": [],
+      "action_plan": [
+        {
+          "action_type": "notify",
+          "target": "incident_channel"
         }
       ]
     }
@@ -154,6 +177,16 @@
       "tags": ["operations", "monitoring"]
     },
     {
+      "task_id": "assess_sensor_drift",
+      "name": "Assess Sensor Drift",
+      "description": "Correlate sensor instability and pressure drift before incident triage begins.",
+      "agent_id": "ops_supervisor",
+      "query": "Assess sensor drift, temperature rise, and vibration instability before escalating incident response.",
+      "tool_id": "notify_supervisor",
+      "created_at": "2026-04-21T19:12:52Z",
+      "tags": ["operations", "sensor-analysis"]
+    },
+    {
       "task_id": "triage_active_incident",
       "name": "Triage Active Incident",
       "description": "Correlate current multimodal evidence and produce a safe incident routing decision.",
@@ -169,7 +202,25 @@
       "workflow_id": "supervise_and_triage_incident",
       "name": "Supervise And Triage Incident",
       "description": "Detect early operational instability, then route the active incident through a governed triage pass.",
-      "task_ids": ["watch_line_three", "triage_active_incident"],
+      "task_ids": ["watch_line_three", "assess_sensor_drift", "triage_active_incident"],
+      "steps": [
+        {
+          "step_id": "detect_line_instability",
+          "task_id": "watch_line_three",
+          "description": "Watch the live line feed and determine whether instability is emerging."
+        },
+        {
+          "step_id": "assess_sensor_branch",
+          "task_id": "assess_sensor_drift",
+          "description": "Assess thermals, vibration, and pressure as a parallel sensor branch."
+        },
+        {
+          "step_id": "triage_confirmed_incident",
+          "task_id": "triage_active_incident",
+          "depends_on": ["detect_line_instability", "assess_sensor_branch"],
+          "description": "Only triage the incident after both monitoring branches complete."
+        }
+      ],
       "created_at": "2026-04-21T19:13:45Z",
       "tags": ["operations", "incident-response", "workflow"]
     }
@@ -183,6 +234,15 @@
       "governance_action": "MONITOR",
       "started_at": "2026-04-21T19:14:50Z",
       "completed_at": "2026-04-21T19:14:59Z"
+    },
+    {
+      "run_id": "agr_pages_demo_02",
+      "agent_id": "incident_triage",
+      "agent_name": "Incident Triage",
+      "status": "completed",
+      "governance_action": "ALLOW",
+      "started_at": "2026-04-21T19:15:00Z",
+      "completed_at": "2026-04-21T19:15:04Z"
     }
   ],
   "task_runs": [
@@ -198,6 +258,32 @@
       "started_at": "2026-04-21T19:14:49Z",
       "completed_at": "2026-04-21T19:14:59Z",
       "detail": "Task completed via agent Operations Supervisor with governance action MONITOR."
+    },
+    {
+      "execution_id": "tskrun_pages_demo_02",
+      "task_id": "assess_sensor_drift",
+      "task_name": "Assess Sensor Drift",
+      "agent_id": "ops_supervisor",
+      "agent_name": "Operations Supervisor",
+      "tool_id": "notify_supervisor",
+      "status": "completed",
+      "governance_action": "ALLOW",
+      "started_at": "2026-04-21T19:14:49Z",
+      "completed_at": "2026-04-21T19:15:00Z",
+      "detail": "Task completed via agent Operations Supervisor with governance action ALLOW."
+    },
+    {
+      "execution_id": "tskrun_pages_demo_03",
+      "task_id": "triage_active_incident",
+      "task_name": "Triage Active Incident",
+      "agent_id": "incident_triage",
+      "agent_name": "Incident Triage",
+      "tool_id": "page_incident_channel",
+      "status": "completed",
+      "governance_action": "ALLOW",
+      "started_at": "2026-04-21T19:15:00Z",
+      "completed_at": "2026-04-21T19:15:04Z",
+      "detail": "Task completed via agent Incident Triage with governance action ALLOW."
     }
   ],
   "workflow_runs": [
@@ -205,27 +291,33 @@
       "execution_id": "wkfrun_pages_demo_01",
       "workflow_id": "supervise_and_triage_incident",
       "workflow_name": "Supervise And Triage Incident",
-      "status": "monitored",
+      "status": "completed",
       "started_at": "2026-04-21T19:14:48Z",
-      "completed_at": "2026-04-21T19:14:59Z",
-      "detail": "Workflow stopped after task watch_line_three due to status monitored.",
-      "task_execution_ids": ["tskrun_pages_demo_01"],
-      "governance_actions": ["MONITOR"]
+      "completed_at": "2026-04-21T19:15:04Z",
+      "detail": "Workflow completed all configured steps after both monitoring branches converged into incident triage.",
+      "step_count": 3,
+      "task_execution_ids": ["tskrun_pages_demo_01", "tskrun_pages_demo_02", "tskrun_pages_demo_03"],
+      "governance_actions": ["MONITOR", "ALLOW", "ALLOW"],
+      "completed_step_ids": [
+        "detect_line_instability",
+        "assess_sensor_branch",
+        "triage_confirmed_incident"
+      ]
     }
   ],
   "latest_action": {
     "decision": {
-      "timestamp": "2026-04-21T19:14:58Z",
-      "rule_id": "SAFETY_004",
-      "action_taken": "MONITOR",
-      "reasoning": "Governance permits observation and escalation without blocking the operator loop."
+      "timestamp": "2026-04-21T19:15:03Z",
+      "rule_id": "DEFAULT_ALLOW",
+      "action_taken": "ALLOW",
+      "reasoning": "Governance permitted incident broadcast after the upstream monitoring branches completed."
     },
     "result": {
-      "timestamp": "2026-04-21T19:14:59Z",
+      "timestamp": "2026-04-21T19:15:04Z",
       "status": "dispatched",
-      "target": "shift_supervisor",
+      "target": "incident_channel",
       "action_type": "notify",
-      "detail": "Supervisor notification enqueued with anomaly summary and projected thermal drift."
+      "detail": "Incident channel notification enqueued with converged multimodal triage summary."
     }
   }
 }

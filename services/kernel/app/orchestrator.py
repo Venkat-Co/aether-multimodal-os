@@ -20,6 +20,7 @@ from .models import (
     WorkflowRunRequest,
     WorkflowRunResult,
     WorkflowRunStatus,
+    WorkflowStep,
     WorkflowTemplate,
 )
 from .registry import AgentRegistry, build_run_result
@@ -310,36 +311,26 @@ class KernelOrchestrator:
     async def run_workflow(
         self, registry: AgentRegistry, workflow: WorkflowTemplate, request: WorkflowRunRequest
     ) -> WorkflowRunResult:
+        steps = registry.workflow_steps(workflow)
         execution = registry.start_workflow_execution(workflow)
         await self._publish_bus_event(
             "kernel.events.workflow_started",
             {
                 "workflow_id": workflow.workflow_id,
                 "execution_id": execution.execution_id,
-                "task_count": len(workflow.task_ids),
+                "task_count": len(steps),
             },
         )
 
         task_runs: list[TaskRunResult] = []
         last_governance_action: str | None = None
+        completed_step_ids: set[str] = set()
+        remaining_steps = {step.step_id: step for step in steps}
 
-        for task_id in workflow.task_ids:
-            task = registry.get_task(task_id)
+        async def execute_step(step: WorkflowStep) -> tuple[WorkflowStep, TaskRunResult]:
+            task = registry.get_task(step.task_id)
             if task is None:
-                registry.fail_workflow_execution(
-                    execution,
-                    detail=f"Workflow halted because task '{task_id}' was not found.",
-                )
-                await self._publish_bus_event(
-                    "kernel.events.workflow_failed",
-                    {
-                        "workflow_id": workflow.workflow_id,
-                        "execution_id": execution.execution_id,
-                        "status": execution.status.value,
-                        "detail": execution.detail,
-                    },
-                )
-                raise ValueError(f"Task '{task_id}' not found for workflow '{workflow.workflow_id}'")
+                raise ValueError(f"Task '{step.task_id}' not found for workflow '{workflow.workflow_id}'")
 
             task_request = TaskRunRequest(
                 query=request.task_query_overrides.get(task.task_id),
@@ -351,36 +342,111 @@ class KernelOrchestrator:
                 window_center=request.window_center,
             )
             task_result = await self.run_task(registry, task, task_request)
-            task_runs.append(task_result)
-            last_governance_action = task_result.task_execution.governance_action
-            task_status = task_result.task_execution.status
-            workflow_status = registry.workflow_status_from_task_status(task_status)
-            registry.transition_workflow_execution(
-                execution,
-                status=WorkflowRunStatus.running,
-                detail=f"Task {task.task_id} completed with status {task_status.value}.",
-                task_execution_id=task_result.task_execution.execution_id,
-                governance_action=last_governance_action,
-            )
-            await self._publish_bus_event(
-                "kernel.events.workflow_task_completed",
-                {
-                    "workflow_id": workflow.workflow_id,
-                    "execution_id": execution.execution_id,
-                    "task_id": task.task_id,
-                    "task_execution_id": task_result.task_execution.execution_id,
-                    "task_status": task_status.value,
-                    "governance_action": last_governance_action,
-                },
+            return step, task_result
+
+        while remaining_steps:
+            ready_steps = [
+                step
+                for step in remaining_steps.values()
+                if all(dependency in completed_step_ids for dependency in step.depends_on)
+            ]
+
+            if not ready_steps:
+                registry.fail_workflow_execution(
+                    execution,
+                    detail="Workflow halted because no dependency-ready steps were available.",
+                )
+                await self._publish_bus_event(
+                    "kernel.events.workflow_failed",
+                    {
+                        "workflow_id": workflow.workflow_id,
+                        "execution_id": execution.execution_id,
+                        "status": execution.status.value,
+                        "detail": execution.detail,
+                    },
+                )
+                raise ValueError(f"Workflow '{workflow.workflow_id}' has unresolved or cyclic step dependencies")
+
+            results = await asyncio.gather(
+                *(execute_step(step) for step in ready_steps),
+                return_exceptions=True,
             )
 
-            if workflow_status in workflow.stop_on_statuses:
-                registry.complete_workflow_execution(
+            stop_triggered = False
+            terminal_status = WorkflowRunStatus.completed
+            terminal_detail = "Workflow completed all configured steps."
+            terminal_task_execution_id: str | None = None
+            terminal_step_id: str | None = None
+
+            for result in results:
+                if isinstance(result, Exception):
+                    registry.fail_workflow_execution(
+                        execution,
+                        detail=f"Workflow failed during parallel step execution: {result}",
+                    )
+                    await self._publish_bus_event(
+                        "kernel.events.workflow_failed",
+                        {
+                            "workflow_id": workflow.workflow_id,
+                            "execution_id": execution.execution_id,
+                            "status": execution.status.value,
+                            "detail": execution.detail,
+                        },
+                    )
+                    raise result
+
+                step, task_result = result
+                task_runs.append(task_result)
+                completed_step_ids.add(step.step_id)
+                remaining_steps.pop(step.step_id, None)
+
+                last_governance_action = task_result.task_execution.governance_action
+                task_status = task_result.task_execution.status
+                workflow_status = registry.workflow_status_from_task_status(task_status)
+                step_result = {
+                    "step_id": step.step_id,
+                    "task_id": step.task_id,
+                    "task_execution_id": task_result.task_execution.execution_id,
+                    "status": task_status.value,
+                    "governance_action": last_governance_action or "",
+                }
+                registry.transition_workflow_execution(
                     execution,
-                    status=workflow_status,
-                    detail=f"Workflow stopped after task {task.task_id} due to status {workflow_status.value}.",
+                    status=WorkflowRunStatus.running,
+                    detail=f"Step {step.step_id} completed with task status {task_status.value}.",
                     task_execution_id=task_result.task_execution.execution_id,
                     governance_action=last_governance_action,
+                    completed_step_id=step.step_id,
+                    step_result=step_result,
+                )
+                await self._publish_bus_event(
+                    "kernel.events.workflow_step_completed",
+                    {
+                        "workflow_id": workflow.workflow_id,
+                        "execution_id": execution.execution_id,
+                        "step_id": step.step_id,
+                        "task_id": step.task_id,
+                        "task_execution_id": task_result.task_execution.execution_id,
+                        "task_status": task_status.value,
+                        "governance_action": last_governance_action,
+                    },
+                )
+
+                if workflow_status in workflow.stop_on_statuses:
+                    stop_triggered = True
+                    terminal_status = workflow_status
+                    terminal_detail = f"Workflow stopped after step {step.step_id} due to status {workflow_status.value}."
+                    terminal_task_execution_id = task_result.task_execution.execution_id
+                    terminal_step_id = step.step_id
+
+            if stop_triggered:
+                registry.complete_workflow_execution(
+                    execution,
+                    status=terminal_status,
+                    detail=terminal_detail,
+                    task_execution_id=terminal_task_execution_id,
+                    governance_action=last_governance_action,
+                    completed_step_id=terminal_step_id,
                 )
                 await self._publish_bus_event(
                     "kernel.events.workflow_completed",
@@ -393,13 +459,18 @@ class KernelOrchestrator:
                 )
                 return WorkflowRunResult(workflow_execution=execution, task_runs=task_runs)
 
-        final_status = registry.workflow_status_from_task_status(task_runs[-1].task_execution.status) if task_runs else WorkflowRunStatus.completed
+        final_status = (
+            registry.workflow_status_from_task_status(task_runs[-1].task_execution.status)
+            if task_runs
+            else WorkflowRunStatus.completed
+        )
         registry.complete_workflow_execution(
             execution,
             status=final_status,
-            detail="Workflow completed all configured tasks.",
+            detail="Workflow completed all configured steps.",
             task_execution_id=task_runs[-1].task_execution.execution_id if task_runs else None,
             governance_action=last_governance_action,
+            completed_step_id=steps[-1].step_id if steps else None,
         )
         await self._publish_bus_event(
             "kernel.events.workflow_completed",

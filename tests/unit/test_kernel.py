@@ -11,6 +11,7 @@ from services.kernel.app.models import (
     ToolBinding,
     WorkflowCreateRequest,
     WorkflowRunRequest,
+    WorkflowStep,
 )
 from services.kernel.app.orchestrator import KernelOrchestrator
 from services.kernel.app.registry import AgentRegistry, build_default_agents, build_default_tasks, build_default_tools, build_default_workflows
@@ -275,15 +276,55 @@ def test_registry_creates_workflow_template() -> None:
         WorkflowCreateRequest(
             workflow_id="ops_recovery_loop",
             name="Ops Recovery Loop",
-            description="Run monitoring and triage in sequence during recovery.",
-            task_ids=["watch_line_three", "triage_active_incident"],
+            description="Run monitoring branches before a governed recovery triage step.",
+            steps=[
+                WorkflowStep(
+                    step_id="monitor_line",
+                    task_id="watch_line_three",
+                    description="Monitor the live line for multimodal instability.",
+                ),
+                WorkflowStep(
+                    step_id="monitor_sensors",
+                    task_id="assess_sensor_drift",
+                    description="Track the sensor branch in parallel.",
+                ),
+                WorkflowStep(
+                    step_id="triage_recovery",
+                    task_id="triage_active_incident",
+                    depends_on=["monitor_line", "monitor_sensors"],
+                    description="Triage only after both monitoring branches complete.",
+                ),
+            ],
             tags=["workflow"],
         )
     )
 
     assert workflow.workflow_id == "ops_recovery_loop"
+    assert workflow.task_ids == ["watch_line_three", "assess_sensor_drift", "triage_active_incident"]
+    assert len(workflow.steps) == 3
     assert registry.get_workflow("ops_recovery_loop") is not None
     assert registry.list_workflows()[0].workflow_id in {"ops_recovery_loop", "supervise_and_triage_incident"}
+
+
+def test_registry_rejects_cyclic_workflow_dependencies() -> None:
+    registry = AgentRegistry(
+        seed_agents=build_default_agents(),
+        seed_tools=build_default_tools(),
+        seed_tasks=build_default_tasks(),
+    )
+
+    with pytest.raises(ValueError, match="cyclic dependency"):
+        registry.create_workflow(
+            WorkflowCreateRequest(
+                workflow_id="invalid_cycle",
+                name="Invalid Cycle",
+                description="Should fail because the dependency graph loops.",
+                steps=[
+                    WorkflowStep(step_id="first", task_id="watch_line_three", depends_on=["second"]),
+                    WorkflowStep(step_id="second", task_id="assess_sensor_drift", depends_on=["first"]),
+                ],
+            )
+        )
 
 
 @pytest.mark.asyncio
@@ -305,8 +346,18 @@ async def test_kernel_runs_seeded_workflow_through_workflow_state_machine() -> N
     result = await orchestrator.run_workflow(registry, workflow, WorkflowRunRequest())
 
     assert result.workflow_execution.workflow_id == "supervise_and_triage_incident"
-    assert result.workflow_execution.status.value in {"completed", "monitored"}
-    assert len(result.task_runs) >= 1
-    assert result.task_runs[0].task_execution.task_id == "watch_line_three"
+    assert result.workflow_execution.status.value == "completed"
+    assert result.workflow_execution.step_count == 3
+    assert len(result.task_runs) == 3
+    assert {task_run.task_execution.task_id for task_run in result.task_runs} == {
+        "watch_line_three",
+        "assess_sensor_drift",
+        "triage_active_incident",
+    }
+    assert set(result.workflow_execution.completed_step_ids) == {
+        "detect_line_instability",
+        "assess_sensor_branch",
+        "triage_confirmed_incident",
+    }
     assert registry.list_workflow_runs()[0].execution_id == result.workflow_execution.execution_id
     await bus.close()

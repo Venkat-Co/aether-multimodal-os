@@ -236,11 +236,19 @@ class WorkflowRunStatus(str, Enum):
     failed = "failed"
 
 
+class WorkflowStep(BaseModel):
+    step_id: str
+    task_id: str
+    depends_on: list[str] = Field(default_factory=list)
+    description: str | None = None
+
+
 class WorkflowTemplate(BaseModel):
     workflow_id: str
     name: str
     description: str
     task_ids: list[str] = Field(default_factory=list)
+    steps: list[WorkflowStep] = Field(default_factory=list)
     stop_on_statuses: list[WorkflowRunStatus] = Field(
         default_factory=lambda: [WorkflowRunStatus.blocked, WorkflowRunStatus.escalated, WorkflowRunStatus.failed]
     )
@@ -254,6 +262,7 @@ class WorkflowCreateRequest(BaseModel):
     name: str
     description: str
     task_ids: list[str] = Field(default_factory=list)
+    steps: list[WorkflowStep] = Field(default_factory=list)
     stop_on_statuses: list[WorkflowRunStatus] = Field(
         default_factory=lambda: [WorkflowRunStatus.blocked, WorkflowRunStatus.escalated, WorkflowRunStatus.failed]
     )
@@ -279,8 +288,11 @@ class WorkflowExecutionRecord(BaseModel):
     started_at: datetime
     completed_at: datetime | None = None
     detail: str
+    step_count: int = 0
     task_execution_ids: list[str] = Field(default_factory=list)
     governance_actions: list[str] = Field(default_factory=list)
+    completed_step_ids: list[str] = Field(default_factory=list)
+    step_results: list[dict[str, Any]] = Field(default_factory=list)
     state_history: list[dict[str, Any]] = Field(default_factory=list)
 
 
@@ -292,8 +304,10 @@ class WorkflowExecutionSummary(BaseModel):
     started_at: datetime
     completed_at: datetime | None = None
     detail: str
+    step_count: int = 0
     task_execution_ids: list[str] = Field(default_factory=list)
     governance_actions: list[str] = Field(default_factory=list)
+    completed_step_ids: list[str] = Field(default_factory=list)
 
 
 class WorkflowRunResult(BaseModel):

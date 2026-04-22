@@ -256,10 +256,17 @@ async def list_workflow_runs() -> list[WorkflowExecutionSummary]:
 
 @app.post("/api/v1/kernel/workflows", response_model=WorkflowTemplate)
 async def create_workflow(request: WorkflowCreateRequest) -> WorkflowTemplate:
-    missing_tasks = [task_id for task_id in request.task_ids if registry.get_task(task_id) is None]
+    referenced_task_ids = [step.task_id for step in request.steps] if request.steps else request.task_ids
+    if not referenced_task_ids:
+        raise HTTPException(status_code=400, detail="Workflow must reference at least one task")
+
+    missing_tasks = [task_id for task_id in referenced_task_ids if registry.get_task(task_id) is None]
     if missing_tasks:
         raise HTTPException(status_code=404, detail=f"Tasks not found for workflow: {', '.join(missing_tasks)}")
-    workflow = registry.create_workflow(request)
+    try:
+        workflow = registry.create_workflow(request)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     logger.info("Registered kernel workflow", extra={"workflow_id": workflow.workflow_id, "name": workflow.name})
     try:
         await publish_runtime_snapshot()

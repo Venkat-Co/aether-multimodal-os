@@ -143,6 +143,25 @@ function listValue(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
 }
 
+function workflowStepRecords(value: unknown): Array<Record<string, unknown>> {
+  return Array.isArray(value) ? value.map(asRecord).filter((item) => Object.keys(item).length > 0) : [];
+}
+
+function workflowStepCount(item: Record<string, unknown>): number {
+  const steps = workflowStepRecords(item["steps"]);
+  return steps.length > 0 ? steps.length : listValue(item["task_ids"]).length;
+}
+
+function workflowBranchCount(item: Record<string, unknown>): number {
+  const steps = workflowStepRecords(item["steps"]);
+  if (steps.length === 0) {
+    return workflowStepCount(item) > 0 ? 1 : 0;
+  }
+
+  const rootSteps = steps.filter((step) => listValue(step["depends_on"]).length === 0).length;
+  return Math.max(rootSteps, 1);
+}
+
 function truncateText(value: string, maxLength: number): string {
   if (value.length <= maxLength) {
     return value;
@@ -518,9 +537,8 @@ function summarizeTaskRun(item: Record<string, unknown>, nowMs: number): Insight
 }
 
 function summarizeWorkflowTemplate(item: Record<string, unknown>, nowMs: number): InsightModel {
-  const taskIds = Array.isArray(item["task_ids"])
-    ? item["task_ids"].filter((taskId): taskId is string => typeof taskId === "string")
-    : [];
+  const stepCount = workflowStepCount(item);
+  const branchCount = workflowBranchCount(item);
   const tags = Array.isArray(item["tags"])
     ? item["tags"].filter((tag): tag is string => typeof tag === "string").slice(0, 3)
     : [];
@@ -534,7 +552,8 @@ function summarizeWorkflowTemplate(item: Record<string, unknown>, nowMs: number)
     ),
     meta: [
       textValue(item["workflow_id"]) ?? "workflow",
-      `${taskIds.length} ${taskIds.length === 1 ? "task" : "tasks"}`,
+      `${stepCount} ${stepCount === 1 ? "step" : "steps"}`,
+      `${branchCount} ${branchCount === 1 ? "branch" : "branches"}`,
       tags.length > 0 ? tags.map(humanizeToken).join(" • ") : "Multi-step runtime",
     ],
     tone: "amber",
@@ -546,6 +565,8 @@ function summarizeWorkflowTemplate(item: Record<string, unknown>, nowMs: number)
 function summarizeWorkflowRun(item: Record<string, unknown>, nowMs: number): InsightModel {
   const status = textValue(item["status"]) ?? "completed";
   const governanceCount = Array.isArray(item["governance_actions"]) ? item["governance_actions"].length : 0;
+  const completedStepCount = Array.isArray(item["completed_step_ids"]) ? item["completed_step_ids"].length : 0;
+  const totalStepCount = numberValue(item["step_count"]) ?? completedStepCount;
   const tone: Tone =
     status === "failed" || status === "blocked"
       ? "red"
@@ -562,6 +583,7 @@ function summarizeWorkflowRun(item: Record<string, unknown>, nowMs: number): Ins
     ),
     meta: [
       textValue(item["execution_id"]) ?? "workflow-run",
+      totalStepCount > 0 ? `${completedStepCount}/${totalStepCount} steps complete` : `${completedStepCount} steps complete`,
       `${governanceCount} governance signals`,
       `${Array.isArray(item["task_execution_ids"]) ? item["task_execution_ids"].length : 0} task runs`,
     ],

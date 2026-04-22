@@ -31,6 +31,7 @@ from .models import (
     WorkflowExecutionSummary,
     WorkflowRunRequest,
     WorkflowRunStatus,
+    WorkflowStep,
     WorkflowTemplate,
 )
 
@@ -99,6 +100,84 @@ class AgentRegistry:
         for workflow in seed_workflows or []:
             self._workflows[workflow.workflow_id] = workflow
 
+    def workflow_steps(self, workflow: WorkflowTemplate) -> list[WorkflowStep]:
+        if workflow.steps:
+            return workflow.steps
+
+        steps: list[WorkflowStep] = []
+        previous_step_id: str | None = None
+        for index, task_id in enumerate(workflow.task_ids):
+            step_id = f"step_{index + 1}_{task_id}"
+            steps.append(
+                WorkflowStep(
+                    step_id=step_id,
+                    task_id=task_id,
+                    depends_on=[previous_step_id] if previous_step_id is not None else [],
+                )
+            )
+            previous_step_id = step_id
+        return steps
+
+    def workflow_task_ids(self, workflow: WorkflowTemplate) -> list[str]:
+        if workflow.steps:
+            seen: list[str] = []
+            for step in workflow.steps:
+                if step.task_id not in seen:
+                    seen.append(step.task_id)
+            return seen
+        return workflow.task_ids
+
+    def _normalize_workflow_steps(self, task_ids: list[str], steps: list[WorkflowStep]) -> list[WorkflowStep]:
+        if steps:
+            return steps
+        normalized_steps: list[WorkflowStep] = []
+        previous_step_id: str | None = None
+        for index, task_id in enumerate(task_ids):
+            step_id = f"step_{index + 1}_{task_id}"
+            normalized_steps.append(
+                WorkflowStep(
+                    step_id=step_id,
+                    task_id=task_id,
+                    depends_on=[previous_step_id] if previous_step_id is not None else [],
+                )
+            )
+            previous_step_id = step_id
+        return normalized_steps
+
+    def _validate_workflow_steps(self, steps: list[WorkflowStep]) -> None:
+        if not steps:
+            raise ValueError("Workflow must contain at least one task step")
+
+        step_ids = [step.step_id for step in steps]
+        if len(step_ids) != len(set(step_ids)):
+            raise ValueError("Workflow step IDs must be unique")
+
+        dependency_map = {step.step_id: step.depends_on for step in steps}
+        for step in steps:
+            unknown_dependencies = [dependency for dependency in step.depends_on if dependency not in step_ids]
+            if unknown_dependencies:
+                raise ValueError(
+                    f"Workflow step '{step.step_id}' depends on unknown steps: {', '.join(unknown_dependencies)}"
+                )
+
+        visiting: set[str] = set()
+        visited: set[str] = set()
+
+        def visit(step_id: str) -> None:
+            if step_id in visited:
+                return
+            if step_id in visiting:
+                raise ValueError(f"Workflow contains a cyclic dependency involving step '{step_id}'")
+
+            visiting.add(step_id)
+            for dependency in dependency_map.get(step_id, []):
+                visit(dependency)
+            visiting.remove(step_id)
+            visited.add(step_id)
+
+        for step_id in step_ids:
+            visit(step_id)
+
     def list_agents(self) -> list[AgentDefinition]:
         return sorted(self._agents.values(), key=lambda agent: agent.name.lower())
 
@@ -141,7 +220,12 @@ class AgentRegistry:
         return self._workflows.get(workflow_id)
 
     def create_workflow(self, request: WorkflowCreateRequest) -> WorkflowTemplate:
-        workflow = WorkflowTemplate(**request.model_dump())
+        payload = request.model_dump()
+        payload["steps"] = self._normalize_workflow_steps(request.task_ids, request.steps)
+        if not payload["task_ids"]:
+            payload["task_ids"] = [step.task_id for step in payload["steps"]]
+        self._validate_workflow_steps(payload["steps"])
+        workflow = WorkflowTemplate(**payload)
         self._workflows[workflow.workflow_id] = workflow
         return workflow
 
@@ -346,18 +430,20 @@ class AgentRegistry:
         ]
 
     def start_workflow_execution(self, workflow: WorkflowTemplate) -> WorkflowExecutionRecord:
+        steps = self.workflow_steps(workflow)
         execution = WorkflowExecutionRecord(
             execution_id=f"wkfrun_{uuid4().hex[:8]}",
             workflow_id=workflow.workflow_id,
             workflow_name=workflow.name,
             status=WorkflowRunStatus.pending,
             started_at=utc_now(),
-            detail="Workflow accepted into the orchestration queue.",
+            detail=f"Workflow accepted into the orchestration queue with {len(steps)} steps.",
+            step_count=len(steps),
             state_history=[
                 {
                     "status": WorkflowRunStatus.pending.value,
                     "timestamp": utc_now().isoformat(),
-                    "detail": "Workflow accepted into the orchestration queue.",
+                    "detail": f"Workflow accepted into the orchestration queue with {len(steps)} steps.",
                 }
             ],
         )
@@ -376,6 +462,8 @@ class AgentRegistry:
         completed: bool = False,
         task_execution_id: str | None = None,
         governance_action: str | None = None,
+        completed_step_id: str | None = None,
+        step_result: dict[str, str] | None = None,
     ) -> WorkflowExecutionRecord:
         execution.status = status
         execution.detail = detail
@@ -383,6 +471,10 @@ class AgentRegistry:
             execution.task_execution_ids.append(task_execution_id)
         if governance_action is not None:
             execution.governance_actions.append(governance_action)
+        if completed_step_id is not None and completed_step_id not in execution.completed_step_ids:
+            execution.completed_step_ids.append(completed_step_id)
+        if step_result is not None:
+            execution.step_results.append(step_result)
         if completed:
             execution.completed_at = utc_now()
         execution.state_history.append(
@@ -392,6 +484,7 @@ class AgentRegistry:
                 "detail": detail,
                 "task_execution_id": task_execution_id,
                 "governance_action": governance_action,
+                "completed_step_id": completed_step_id,
             }
         )
         return execution
@@ -403,6 +496,8 @@ class AgentRegistry:
         detail: str,
         task_execution_id: str | None = None,
         governance_action: str | None = None,
+        completed_step_id: str | None = None,
+        step_result: dict[str, str] | None = None,
     ) -> WorkflowExecutionRecord:
         return self.transition_workflow_execution(
             execution,
@@ -411,6 +506,8 @@ class AgentRegistry:
             completed=True,
             task_execution_id=task_execution_id,
             governance_action=governance_action,
+            completed_step_id=completed_step_id,
+            step_result=step_result,
         )
 
     def fail_workflow_execution(
@@ -434,8 +531,10 @@ class AgentRegistry:
                 started_at=run.started_at,
                 completed_at=run.completed_at,
                 detail=run.detail,
+                step_count=run.step_count,
                 task_execution_ids=run.task_execution_ids,
                 governance_actions=run.governance_actions,
+                completed_step_ids=run.completed_step_ids,
             )
             for run in self._workflow_runs
         ]
@@ -530,6 +629,15 @@ def build_default_tasks() -> list[TaskTemplate]:
             tags=["operations", "monitoring"],
         ),
         TaskTemplate(
+            task_id="assess_sensor_drift",
+            name="Assess Sensor Drift",
+            description="Correlate sensor instability and pressure drift before incident triage begins.",
+            agent_id="ops_supervisor",
+            query="Assess sensor drift, temperature rise, and vibration instability before escalating incident response.",
+            tool_id="notify_supervisor",
+            tags=["operations", "sensor-analysis"],
+        ),
+        TaskTemplate(
             task_id="triage_active_incident",
             name="Triage Active Incident",
             description="Correlate current multimodal evidence and produce a safe incident routing decision.",
@@ -547,12 +655,24 @@ def build_default_workflows() -> list[WorkflowTemplate]:
             workflow_id="supervise_and_triage_incident",
             name="Supervise And Triage Incident",
             description="Detect early operational instability, then route the active incident through a governed triage pass.",
-            task_ids=["watch_line_three", "triage_active_incident"],
-            stop_on_statuses=[
-                WorkflowRunStatus.monitored,
-                WorkflowRunStatus.blocked,
-                WorkflowRunStatus.escalated,
-                WorkflowRunStatus.failed,
+            task_ids=["watch_line_three", "assess_sensor_drift", "triage_active_incident"],
+            steps=[
+                WorkflowStep(
+                    step_id="detect_line_instability",
+                    task_id="watch_line_three",
+                    description="Watch the live line feed and determine whether instability is emerging.",
+                ),
+                WorkflowStep(
+                    step_id="assess_sensor_branch",
+                    task_id="assess_sensor_drift",
+                    description="Assess thermals, vibration, and pressure as a parallel sensor branch.",
+                ),
+                WorkflowStep(
+                    step_id="triage_confirmed_incident",
+                    task_id="triage_active_incident",
+                    depends_on=["detect_line_instability", "assess_sensor_branch"],
+                    description="Only triage the incident after both monitoring branches complete.",
+                ),
             ],
             tags=["operations", "incident-response", "workflow"],
         )
