@@ -15,6 +15,9 @@ from .models import (
     KernelPipelineRequest,
     KernelPipelineResult,
     ReviewQueueItem,
+    ReviewReplaySummary,
+    ReviewResolveRequest,
+    ReviewResolveResult,
     TaskRunRequest,
     TaskRunResult,
     TaskTemplate,
@@ -62,6 +65,88 @@ class KernelOrchestrator:
     @staticmethod
     def _should_queue_review(status: str) -> bool:
         return status in {"blocked", "escalated", "failed"}
+
+    async def _run_review_replay(
+        self, registry: AgentRegistry, review_item: ReviewQueueItem, request: ReviewResolveRequest
+    ) -> ReviewReplaySummary:
+        if review_item.source_kind == "agent":
+            agent = registry.get_agent(review_item.source_id)
+            if agent is None:
+                raise ValueError(f"Agent '{review_item.source_id}' not found for review replay")
+            payload = dict(review_item.metadata.get("agent_request", {}))
+            payload["publish_realtime"] = request.publish_realtime
+            replay_request = AgentRunRequest.model_validate(payload)
+            replay_result = await self.run_agent(registry, agent, replay_request)
+            return ReviewReplaySummary(
+                source_kind="agent",
+                source_id=agent.agent_id,
+                run_id=replay_result.run_id,
+                status=replay_result.status.value,
+            )
+
+        if review_item.source_kind == "task":
+            task = registry.get_task(review_item.source_id)
+            if task is None:
+                raise ValueError(f"Task '{review_item.source_id}' not found for review replay")
+            payload = dict(review_item.metadata.get("task_request", {}))
+            payload["publish_realtime"] = request.publish_realtime
+            replay_request = TaskRunRequest.model_validate(payload)
+            replay_result = await self.run_task(registry, task, replay_request)
+            return ReviewReplaySummary(
+                source_kind="task",
+                source_id=task.task_id,
+                run_id=replay_result.task_execution.execution_id,
+                status=replay_result.task_execution.status.value,
+            )
+
+        if review_item.source_kind == "workflow":
+            workflow = registry.get_workflow(review_item.source_id)
+            if workflow is None:
+                raise ValueError(f"Workflow '{review_item.source_id}' not found for review replay")
+            payload = dict(review_item.metadata.get("workflow_request", {}))
+            payload["publish_realtime"] = request.publish_realtime
+            replay_request = WorkflowRunRequest.model_validate(payload)
+            replay_result = await self.run_workflow(registry, workflow, replay_request)
+            return ReviewReplaySummary(
+                source_kind="workflow",
+                source_id=workflow.workflow_id,
+                run_id=replay_result.workflow_execution.execution_id,
+                status=replay_result.workflow_execution.status.value,
+            )
+
+        raise ValueError(f"Review replay is not supported for source kind '{review_item.source_kind}'")
+
+    async def resolve_review(
+        self, registry: AgentRegistry, review_id: str, request: ReviewResolveRequest
+    ) -> ReviewResolveResult:
+        review_item = registry.get_review(review_id)
+        if review_item is None:
+            raise ValueError(f"Review item '{review_id}' not found")
+
+        replay: ReviewReplaySummary | None = None
+        if request.rerun_source:
+            replay = await self._run_review_replay(registry, review_item, request)
+
+        resolved_review = registry.resolve_review(review_id, request)
+        if resolved_review is None:
+            raise ValueError(f"Review item '{review_id}' not found")
+
+        if replay is not None:
+            resolved_review.metadata["replay"] = replay.model_dump(mode="json")
+            resolved_review.updated_at = datetime.now(tz=UTC)
+
+        await self._publish_review_item(resolved_review)
+        await self._publish_bus_event(
+            "kernel.events.review_resolved",
+            {
+                "review_id": resolved_review.review_id,
+                "resolution": resolved_review.resolution,
+                "reviewed_by": resolved_review.reviewed_by,
+                "rerun_source": request.rerun_source,
+                "replay_run_id": replay.run_id if replay is not None else None,
+            },
+        )
+        return ReviewResolveResult(review=resolved_review, replay=replay)
 
     def _build_reasoning_state(
         self, packets: list[dict[str, Any]], fused_event: dict[str, Any], overrides: dict[str, Any]
@@ -277,6 +362,7 @@ class KernelOrchestrator:
                     "decision_id": decision.get("decision_id"),
                     "query": pipeline_request.query,
                     "reasoning_mode": pipeline_request.reasoning_mode.value,
+                    "agent_request": request.model_dump(mode="json"),
                 },
             )
             await self._publish_review_item(review_item)
@@ -335,6 +421,7 @@ class KernelOrchestrator:
                         "agent_id": agent.agent_id,
                         "agent_run_id": agent_run.run_id,
                         "decision_id": decision.get("decision_id"),
+                        "task_request": request.model_dump(mode="json"),
                     },
                 )
                 await self._publish_review_item(review_item)
@@ -362,7 +449,10 @@ class KernelOrchestrator:
                     trigger_status=execution.status.value,
                     governance_action=execution.governance_action,
                     risk_level="high",
-                    metadata={"agent_id": agent.agent_id},
+                    metadata={
+                        "agent_id": agent.agent_id,
+                        "task_request": request.model_dump(mode="json"),
+                    },
                 )
                 await self._publish_review_item(review_item)
             await self._publish_bus_event(
@@ -437,6 +527,7 @@ class KernelOrchestrator:
                     metadata={
                         "completed_steps": execution.completed_step_ids,
                         "step_count": execution.step_count,
+                        "workflow_request": request.model_dump(mode="json"),
                     },
                 )
                 await self._publish_review_item(review_item)
@@ -482,6 +573,7 @@ class KernelOrchestrator:
                         metadata={
                             "completed_steps": execution.completed_step_ids,
                             "step_count": execution.step_count,
+                            "workflow_request": request.model_dump(mode="json"),
                         },
                     )
                     await self._publish_review_item(review_item)
@@ -569,6 +661,7 @@ class KernelOrchestrator:
                         metadata={
                             "completed_steps": execution.completed_step_ids,
                             "step_count": execution.step_count,
+                            "workflow_request": request.model_dump(mode="json"),
                         },
                     )
                     await self._publish_review_item(review_item)
@@ -613,6 +706,7 @@ class KernelOrchestrator:
                 metadata={
                     "completed_steps": execution.completed_step_ids,
                     "step_count": execution.step_count,
+                    "workflow_request": request.model_dump(mode="json"),
                 },
             )
             await self._publish_review_item(review_item)

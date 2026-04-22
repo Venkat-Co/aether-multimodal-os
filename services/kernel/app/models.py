@@ -342,9 +342,23 @@ class ReviewQueueItem(BaseModel):
 
 
 class ReviewResolveRequest(BaseModel):
-    resolution: str = "acknowledged"
+    resolution: str = "approved"
     resolution_notes: str | None = None
     reviewed_by: str | None = None
+    rerun_source: bool = False
+    publish_realtime: bool = True
+
+
+class ReviewReplaySummary(BaseModel):
+    source_kind: str
+    source_id: str
+    run_id: str
+    status: str
+
+
+class ReviewResolveResult(BaseModel):
+    review: ReviewQueueItem
+    replay: ReviewReplaySummary | None = None
 
 
 class KernelPipelineRequest(BaseModel):

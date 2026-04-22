@@ -324,6 +324,32 @@
         "completed_steps": ["detect_line_instability", "assess_sensor_branch"],
         "step_count": 3
       }
+    },
+    {
+      "review_id": "rev_pages_demo_02",
+      "status": "resolved",
+      "source_kind": "agent",
+      "source_id": "ops_supervisor",
+      "source_name": "Operations Supervisor",
+      "run_id": "agr_pages_demo_01",
+      "title": "Operations Supervisor requires operator review",
+      "summary": "A prior escalation was reviewed and approved for replay through the governed runtime.",
+      "trigger_status": "escalated",
+      "governance_action": "ESCALATE",
+      "risk_level": "high",
+      "created_at": "2026-04-21T19:12:08Z",
+      "updated_at": "2026-04-21T19:12:40Z",
+      "resolved_at": "2026-04-21T19:12:40Z",
+      "resolution": "approved",
+      "reviewed_by": "shift_supervisor",
+      "metadata": {
+        "replay": {
+          "source_kind": "agent",
+          "source_id": "ops_supervisor",
+          "run_id": "agr_pages_demo_02",
+          "status": "completed"
+        }
+      }
     }
   ],
   "latest_action": {

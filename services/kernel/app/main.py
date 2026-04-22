@@ -19,6 +19,7 @@ from .models import (
     KernelPipelineResult,
     ReviewQueueItem,
     ReviewResolveRequest,
+    ReviewResolveResult,
     TaskCreateRequest,
     TaskExecutionSummary,
     TaskRunRequest,
@@ -164,17 +165,32 @@ async def get_review(review_id: str) -> ReviewQueueItem:
     return review
 
 
-@app.post("/api/v1/kernel/reviews/{review_id}/resolve", response_model=ReviewQueueItem)
-async def resolve_review(review_id: str, request: ReviewResolveRequest) -> ReviewQueueItem:
-    review = registry.resolve_review(review_id, request)
-    if review is None:
-        raise HTTPException(status_code=404, detail=f"Review item '{review_id}' not found")
-    logger.info("Resolved review queue item", extra={"review_id": review.review_id, "resolution": review.resolution})
+@app.post("/api/v1/kernel/reviews/{review_id}/resolve", response_model=ReviewResolveResult)
+async def resolve_review(review_id: str, request: ReviewResolveRequest) -> ReviewResolveResult:
+    try:
+        result = await orchestrator.resolve_review(registry, review_id, request)
+    except ValueError as exc:
+        detail = str(exc)
+        status_code = 404 if "not found" in detail.lower() else 400
+        raise HTTPException(status_code=status_code, detail=detail) from exc
+
+    logger.info(
+        "Resolved review queue item",
+        extra={
+            "review_id": result.review.review_id,
+            "resolution": result.review.resolution,
+            "rerun_source": request.rerun_source,
+            "replay_run_id": result.replay.run_id if result.replay is not None else None,
+        },
+    )
     try:
         await publish_runtime_snapshot()
     except Exception:
-        logger.info("Realtime dashboard unavailable during review resolution publish", extra={"review_id": review.review_id})
-    return review
+        logger.info(
+            "Realtime dashboard unavailable during review resolution publish",
+            extra={"review_id": result.review.review_id},
+        )
+    return result
 
 
 @app.post("/api/v1/kernel/agents", response_model=AgentDefinition)

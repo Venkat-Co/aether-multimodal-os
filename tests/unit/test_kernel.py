@@ -5,6 +5,7 @@ from services.kernel.app.models import (
     AgentCreateRequest,
     AgentRunRequest,
     KernelPipelineRequest,
+    ReviewResolveRequest,
     StreamSpec,
     TaskCreateRequest,
     TaskRunRequest,
@@ -430,4 +431,46 @@ async def test_kernel_queues_single_review_for_escalated_workflow() -> None:
     assert reviews[0].source_kind == "workflow"
     assert reviews[0].source_id == "supervise_and_triage_incident"
     assert reviews[0].trigger_status == "escalated"
+    await bus.close()
+
+
+@pytest.mark.asyncio
+async def test_kernel_can_resolve_review_and_rerun_agent() -> None:
+    initial_clients = EscalatingClients()
+    bus = InMemoryEventBus()
+    registry = AgentRegistry(
+        seed_agents=build_default_agents(),
+        seed_tools=build_default_tools(),
+        seed_tasks=build_default_tasks(),
+        seed_workflows=build_default_workflows(),
+    )
+    await bus.connect()
+    orchestrator = KernelOrchestrator(initial_clients, bus, "aether-kernel")  # type: ignore[arg-type]
+
+    agent = registry.get_agent("ops_supervisor")
+    assert agent is not None
+
+    escalated_run = await orchestrator.run_agent(registry, agent, AgentRunRequest())
+    assert escalated_run.status.value == "escalated"
+    review = registry.list_reviews()[0]
+
+    replay_clients = FakeClients()
+    orchestrator.clients = replay_clients  # type: ignore[assignment]
+    resolution = await orchestrator.resolve_review(
+        registry,
+        review.review_id,
+        ReviewResolveRequest(
+            resolution="approved",
+            reviewed_by="operator_001",
+            rerun_source=True,
+        ),
+    )
+
+    assert resolution.review.status.value == "resolved"
+    assert resolution.review.reviewed_by == "operator_001"
+    assert resolution.replay is not None
+    assert resolution.replay.source_kind == "agent"
+    assert resolution.replay.status == "completed"
+    assert len(registry.list_runs()) == 2
+    assert any(topic == "reviews" for topic, _ in replay_clients.published)
     await bus.close()

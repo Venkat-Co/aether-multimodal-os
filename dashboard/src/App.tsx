@@ -601,6 +601,10 @@ function summarizeReviewItem(item: Record<string, unknown>, nowMs: number): Insi
   const governanceAction = textValue(item["governance_action"]) ?? "REVIEW";
   const sourceKind = humanizeToken(textValue(item["source_kind"]) ?? "runtime");
   const riskLevel = humanizeToken(textValue(item["risk_level"]) ?? "medium");
+  const replay = asRecord(item["metadata"])["replay"];
+  const replayRecord = asRecord(replay);
+  const resolution = textValue(item["resolution"]);
+  const reviewedBy = textValue(item["reviewed_by"]);
   const tone: Tone =
     status === "resolved"
       ? "mint"
@@ -612,13 +616,17 @@ function summarizeReviewItem(item: Record<string, unknown>, nowMs: number): Insi
     lane: status === "resolved" ? "Resolved" : `${sourceKind} Review`,
     title: textValue(item["title"]) ?? textValue(item["source_name"]) ?? "Review queue item",
     summary: truncateText(
-      textValue(item["summary"]) ?? "Human review is required before continuing the operator loop.",
+      resolution
+        ? `${textValue(item["summary"]) ?? "Human review captured."} Resolution ${humanizeToken(resolution)}${reviewedBy ? ` by ${reviewedBy}` : ""}.`
+        : textValue(item["summary"]) ?? "Human review is required before continuing the operator loop.",
       112,
     ),
     meta: [
       textValue(item["review_id"]) ?? "review",
       `Risk ${riskLevel}`,
-      `Trigger ${humanizeToken(triggerStatus)}`,
+      replayRecord && Object.keys(replayRecord).length > 0
+        ? `Replay ${humanizeToken(textValue(replayRecord["status"]) ?? "queued")}`
+        : `Trigger ${humanizeToken(triggerStatus)}`,
     ],
     tone,
     timestamp: formatClock(item["resolved_at"] ?? item["created_at"]),
