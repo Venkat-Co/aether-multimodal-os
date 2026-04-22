@@ -34,6 +34,9 @@ class BroadcastHub:
             "memory_updates": [],
             "agents": [],
             "agent_runs": [],
+            "tools": [],
+            "tasks": [],
+            "task_runs": [],
         }
         self._lock = asyncio.Lock()
 

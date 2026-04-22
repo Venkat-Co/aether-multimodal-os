@@ -8,7 +8,16 @@ from aether_core.event_bus import EventBus
 from aether_core.vector import deterministic_embedding
 
 from .clients import AetherServiceClients
-from .models import AgentDefinition, AgentRunRequest, AgentRunResult, KernelPipelineRequest, KernelPipelineResult
+from .models import (
+    AgentDefinition,
+    AgentRunRequest,
+    AgentRunResult,
+    KernelPipelineRequest,
+    KernelPipelineResult,
+    TaskRunRequest,
+    TaskRunResult,
+    TaskTemplate,
+)
 from .registry import AgentRegistry, build_run_result
 
 
@@ -243,3 +252,53 @@ class KernelOrchestrator:
             },
         )
         return run_result
+
+    async def run_task(self, registry: AgentRegistry, task: TaskTemplate, request: TaskRunRequest) -> TaskRunResult:
+        agent = registry.get_agent(task.agent_id)
+        if agent is None:
+            raise ValueError(f"Agent '{task.agent_id}' not found for task '{task.task_id}'")
+
+        tool = registry.get_tool(request.tool_id or task.tool_id) if (request.tool_id or task.tool_id) else None
+        execution = registry.start_task_execution(task, agent, tool)
+        await self._publish_bus_event(
+            "kernel.events.task_started",
+            {
+                "task_id": task.task_id,
+                "execution_id": execution.execution_id,
+                "agent_id": agent.agent_id,
+                "tool_id": execution.tool_id,
+            },
+        )
+
+        try:
+            agent_request = registry.build_agent_run_request_from_task(task, request, tool)
+            agent_run = await self.run_agent(registry, agent, agent_request)
+            registry.complete_task_execution(
+                execution,
+                governance_action=agent_run.governance_action,
+                detail=f"Task completed via agent {agent.name} with governance action {agent_run.governance_action}.",
+                agent_run_id=agent_run.run_id,
+            )
+            await self._publish_bus_event(
+                "kernel.events.task_completed",
+                {
+                    "task_id": task.task_id,
+                    "execution_id": execution.execution_id,
+                    "status": execution.status.value,
+                    "governance_action": execution.governance_action,
+                    "agent_run_id": agent_run.run_id,
+                },
+            )
+            return TaskRunResult(task_execution=execution, agent_run=agent_run)
+        except Exception as exc:
+            registry.fail_task_execution(execution, detail=f"Task failed before completion: {exc}")
+            await self._publish_bus_event(
+                "kernel.events.task_failed",
+                {
+                    "task_id": task.task_id,
+                    "execution_id": execution.execution_id,
+                    "status": execution.status.value,
+                    "detail": execution.detail,
+                },
+            )
+            raise

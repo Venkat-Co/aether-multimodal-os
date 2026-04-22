@@ -1,9 +1,17 @@
 import pytest
 
 from aether_core.event_bus import InMemoryEventBus
-from services.kernel.app.models import AgentCreateRequest, AgentRunRequest, KernelPipelineRequest, StreamSpec, ToolBinding
+from services.kernel.app.models import (
+    AgentCreateRequest,
+    AgentRunRequest,
+    KernelPipelineRequest,
+    StreamSpec,
+    TaskCreateRequest,
+    TaskRunRequest,
+    ToolBinding,
+)
 from services.kernel.app.orchestrator import KernelOrchestrator
-from services.kernel.app.registry import AgentRegistry, build_default_agents
+from services.kernel.app.registry import AgentRegistry, build_default_agents, build_default_tasks, build_default_tools
 
 
 class FakeClients:
@@ -135,7 +143,11 @@ async def test_kernel_uses_bus_driven_fusion_when_distributed() -> None:
 async def test_kernel_runs_seeded_agent_through_pipeline() -> None:
     clients = FakeClients()
     bus = InMemoryEventBus()
-    registry = AgentRegistry(seed_agents=build_default_agents())
+    registry = AgentRegistry(
+        seed_agents=build_default_agents(),
+        seed_tools=build_default_tools(),
+        seed_tasks=build_default_tasks(),
+    )
     await bus.connect()
     orchestrator = KernelOrchestrator(clients, bus, "aether-kernel")  # type: ignore[arg-type]
 
@@ -188,3 +200,61 @@ def test_agent_registry_builds_pipeline_request_from_definition() -> None:
     assert request.packets_per_stream == 2
     assert request.streams[0].source_id == "camera_001"
     assert request.action_template.target == "safety_operations"
+
+
+def test_task_registry_builds_agent_request_from_task_template() -> None:
+    registry = AgentRegistry(
+        seed_agents=build_default_agents(),
+        seed_tools=build_default_tools(),
+    )
+    task = registry.create_task(
+        TaskCreateRequest(
+            task_id="check_safety_lane",
+            name="Check Safety Lane",
+            description="Inspect live safety signals.",
+            agent_id="ops_supervisor",
+            query="Assess safety lane conditions and escalate risk patterns.",
+            tool_id="notify_supervisor",
+            packets_per_stream=2,
+            tags=["safety"],
+        )
+    )
+
+    tool = registry.get_tool("notify_supervisor")
+    request = registry.build_agent_run_request_from_task(
+        task,
+        TaskRunRequest(query="Explain the current safety deviation."),
+        tool,
+    )
+
+    assert request.query == "Explain the current safety deviation."
+    assert request.packets_per_stream == 2
+    assert request.action_template_override is not None
+    assert request.action_template_override.target == "shift_supervisor"
+
+
+@pytest.mark.asyncio
+async def test_kernel_runs_seeded_task_through_task_state_machine() -> None:
+    clients = FakeClients()
+    bus = InMemoryEventBus()
+    registry = AgentRegistry(
+        seed_agents=build_default_agents(),
+        seed_tools=build_default_tools(),
+        seed_tasks=build_default_tasks(),
+    )
+    await bus.connect()
+    orchestrator = KernelOrchestrator(clients, bus, "aether-kernel")  # type: ignore[arg-type]
+
+    task = registry.get_task("watch_line_three")
+    assert task is not None
+
+    result = await orchestrator.run_task(registry, task, TaskRunRequest())
+
+    assert result.task_execution.task_id == "watch_line_three"
+    assert result.task_execution.status.value == "completed"
+    assert result.task_execution.governance_action == "ALLOW"
+    assert result.agent_run is not None
+    assert result.agent_run.agent_id == "ops_supervisor"
+    assert len(result.task_execution.state_history) >= 3
+    assert registry.list_task_runs()[0].execution_id == result.task_execution.execution_id
+    await bus.close()

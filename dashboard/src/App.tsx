@@ -12,6 +12,9 @@ type DashboardState = {
   memory_updates: Array<Record<string, unknown>>;
   agents: Array<Record<string, unknown>>;
   agent_runs: Array<Record<string, unknown>>;
+  tools: Array<Record<string, unknown>>;
+  tasks: Array<Record<string, unknown>>;
+  task_runs: Array<Record<string, unknown>>;
   latest_action?: Record<string, unknown>;
 };
 
@@ -63,6 +66,9 @@ const initialState: DashboardState = {
   memory_updates: [],
   agents: [],
   agent_runs: [],
+  tools: [],
+  tasks: [],
+  task_runs: [],
 };
 
 const orbitalNodes: Array<{ position: [number, number, number]; color: string; scale: number }> = [
@@ -434,6 +440,79 @@ function summarizeAgentRun(item: Record<string, unknown>, nowMs: number): Insigh
   };
 }
 
+function summarizeToolDefinition(item: Record<string, unknown>, nowMs: number): InsightModel {
+  const tags = Array.isArray(item["tags"])
+    ? item["tags"].filter((tag): tag is string => typeof tag === "string").slice(0, 3)
+    : [];
+
+  return {
+    lane: "Tool",
+    title: textValue(item["name"]) ?? textValue(item["tool_id"]) ?? "Registered tool",
+    summary: truncateText(
+      textValue(item["description"]) ?? "Reusable tool is ready for governed action dispatch.",
+      112,
+    ),
+    meta: [
+      textValue(item["tool_id"]) ?? "tool",
+      humanizeToken(textValue(item["category"]) ?? "operations"),
+      tags.length > 0 ? tags.map(humanizeToken).join(" • ") : "Reusable runtime binding",
+    ],
+    tone: "slate",
+    timestamp: formatClock(item["created_at"]),
+    relativeTime: formatRelativeTime(item["created_at"], nowMs),
+  };
+}
+
+function summarizeTaskTemplate(item: Record<string, unknown>, nowMs: number): InsightModel {
+  const tags = Array.isArray(item["tags"])
+    ? item["tags"].filter((tag): tag is string => typeof tag === "string").slice(0, 3)
+    : [];
+  return {
+    lane: "Task",
+    title: textValue(item["name"]) ?? textValue(item["task_id"]) ?? "Reusable task template",
+    summary: truncateText(
+      textValue(item["query"]) ?? textValue(item["description"]) ?? "Task template is ready to be executed by an agent.",
+      112,
+    ),
+    meta: [
+      textValue(item["task_id"]) ?? "task",
+      textValue(item["agent_id"]) ?? "agent",
+      tags.length > 0 ? tags.map(humanizeToken).join(" • ") : "Queued workflow",
+    ],
+    tone: "cyan",
+    timestamp: formatClock(item["created_at"]),
+    relativeTime: formatRelativeTime(item["created_at"], nowMs),
+  };
+}
+
+function summarizeTaskRun(item: Record<string, unknown>, nowMs: number): InsightModel {
+  const status = textValue(item["status"]) ?? "completed";
+  const governanceAction = textValue(item["governance_action"]) ?? "ALLOW";
+  const tone: Tone =
+    status === "failed" || status === "blocked"
+      ? "red"
+      : status === "escalated" || status === "monitored" || status === "running"
+        ? "amber"
+        : "mint";
+
+  return {
+    lane: humanizeToken(status),
+    title: textValue(item["task_name"]) ?? textValue(item["task_id"]) ?? "Task execution completed",
+    summary: truncateText(
+      textValue(item["detail"]) ?? `Task execution completed with governance action ${governanceAction}.`,
+      112,
+    ),
+    meta: [
+      textValue(item["execution_id"]) ?? "task-run",
+      textValue(item["tool_id"]) ?? "no-tool",
+      `Action ${governanceAction}`,
+    ],
+    tone,
+    timestamp: formatClock(item["completed_at"] ?? item["started_at"]),
+    relativeTime: formatRelativeTime(item["completed_at"] ?? item["started_at"], nowMs),
+  };
+}
+
 function buildActivityTimeline(state: DashboardState, nowMs: number): ActivityModel[] {
   const items: ActivityModel[] = [];
 
@@ -503,6 +582,26 @@ function buildActivityTimeline(state: DashboardState, nowMs: number): ActivityMo
       detail: formatRelativeTime(record["completed_at"] ?? record["started_at"], nowMs),
       tone:
         textValue(record["status"]) === "blocked"
+          ? "red"
+          : textValue(record["status"]) === "escalated" || textValue(record["status"]) === "monitored"
+            ? "amber"
+            : "mint",
+      timestamp: formatClock(record["completed_at"] ?? record["started_at"]),
+      sortKey: timestampMillis(record["completed_at"] ?? record["started_at"]),
+    });
+  }
+
+  for (const item of state.task_runs.slice(-3)) {
+    const record = asRecord(item);
+    items.push({
+      lane: "Task Runtime",
+      title: truncateText(
+        `${textValue(record["task_name"]) ?? "Task"} · ${humanizeToken(textValue(record["status"]) ?? "completed")}`,
+        78,
+      ),
+      detail: formatRelativeTime(record["completed_at"] ?? record["started_at"], nowMs),
+      tone:
+        textValue(record["status"]) === "failed" || textValue(record["status"]) === "blocked"
           ? "red"
           : textValue(record["status"]) === "escalated" || textValue(record["status"]) === "monitored"
             ? "amber"
@@ -700,6 +799,9 @@ export default function App() {
   const memoryCards = state.memory_updates.slice(-6).map((item) => summarizeMemory(item, nowMs));
   const agentRunCards = state.agent_runs.slice(-4).map((item) => summarizeAgentRun(item, nowMs));
   const agentCards = state.agents.slice(-4).map((item) => summarizeAgentDefinition(item, nowMs));
+  const toolCards = state.tools.slice(-4).map((item) => summarizeToolDefinition(item, nowMs));
+  const taskCards = state.tasks.slice(-4).map((item) => summarizeTaskTemplate(item, nowMs));
+  const taskRunCards = state.task_runs.slice(-4).map((item) => summarizeTaskRun(item, nowMs));
   const fusionCards = state.fusion.slice(-4).map((item) => summarizeFusion(item, nowMs));
   const activityTimeline = buildActivityTimeline(state, nowMs);
   const latestReasoning = reasoningCards[reasoningCards.length - 1];
@@ -707,6 +809,7 @@ export default function App() {
   const latestMemory = memoryCards[memoryCards.length - 1];
   const latestFusion = fusionCards[fusionCards.length - 1];
   const latestAgentRun = agentRunCards[agentRunCards.length - 1];
+  const latestTaskRun = taskRunCards[taskRunCards.length - 1];
   const latestAction = asRecord(state.latest_action);
   const latestDecision = asRecord(latestAction["decision"]);
   const latestResult = asRecord(latestAction["result"]);
@@ -740,10 +843,10 @@ export default function App() {
       tone: toneForGovernanceAction(latestDecisionAction),
     },
     {
-      label: "Agent Runtime",
-      value: String(state.agents.length),
-      detail: latestAgentRun?.title ?? `${state.agent_runs.length} recent governed runs`,
-      progress: clampProgress(state.agent_runs.length > 0 ? state.agent_runs.length / 6 : state.agents.length / 4),
+      label: "Task Runtime",
+      value: String(state.tasks.length),
+      detail: latestTaskRun?.title ?? latestAgentRun?.title ?? `${state.tools.length} tools in registry`,
+      progress: clampProgress(state.task_runs.length > 0 ? state.task_runs.length / 6 : state.tasks.length / 4),
       tone: "mint",
     },
   ];
@@ -792,6 +895,7 @@ export default function App() {
               <span className="inline-pill">Kernel {humanizeToken(state.status)}</span>
               <span className="inline-pill">Modalities {activeModalities.length}</span>
               <span className="inline-pill">Agents {state.agents.length}</span>
+              <span className="inline-pill">Tasks {state.tasks.length}</span>
               <span className="inline-pill">Events {activityTimeline.length}</span>
               <span className="inline-pill">Action Loop {textValue(latestResult["status"]) ?? "idle"}</span>
             </div>
@@ -990,21 +1094,32 @@ export default function App() {
           <article className="panel agent-panel">
             <div className="panel-topline">
               <div>
-                <span className="section-kicker">Agent Runtime</span>
-                <h2>Governed agents and recent runs</h2>
+                <span className="section-kicker">Runtime Queue</span>
+                <h2>Tools, tasks, and governed executions</h2>
               </div>
-              <span className="panel-meta">{state.agent_runs.length} recent runs</span>
+              <span className="panel-meta">{state.task_runs.length} task runs · {state.tools.length} tools</span>
             </div>
 
             <div className="insight-stack">
-              {agentRunCards.length > 0
-                ? agentRunCards
+              {taskRunCards.length > 0
+                ? taskRunCards
                     .slice()
                     .reverse()
                     .map((item, index) => <InsightCard key={`${item.lane}-${item.timestamp}-${index}`} item={item} featured={index === 0} />)
-                : agentCards.length > 0
-                  ? agentCards.map((item, index) => <InsightCard key={`${item.lane}-${item.timestamp}-${index}`} item={item} featured={index === 0} />)
-                  : <EmptyState title="No agents registered" body="Register or run an agent to bring the orchestration runtime online." />}
+                : taskCards.length > 0
+                  ? taskCards
+                      .map((item, index) => <InsightCard key={`${item.lane}-${item.timestamp}-${index}`} item={item} featured={index === 0} />)
+                  : toolCards.length > 0
+                    ? toolCards
+                        .map((item, index) => <InsightCard key={`${item.lane}-${item.timestamp}-${index}`} item={item} featured={index === 0} />)
+                    : agentRunCards.length > 0
+                      ? agentRunCards
+                    .slice()
+                    .reverse()
+                    .map((item, index) => <InsightCard key={`${item.lane}-${item.timestamp}-${index}`} item={item} featured={index === 0} />)
+                      : agentCards.length > 0
+                        ? agentCards.map((item, index) => <InsightCard key={`${item.lane}-${item.timestamp}-${index}`} item={item} featured={index === 0} />)
+                        : <EmptyState title="Runtime registry offline" body="Register a tool or task to bring the orchestration runtime online." />}
             </div>
           </article>
         </section>

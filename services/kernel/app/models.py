@@ -36,6 +36,37 @@ class ToolBinding(BaseModel):
     criticality: float = 0.0
 
 
+class ToolDefinition(BaseModel):
+    tool_id: str
+    name: str
+    description: str
+    action_type: str = "notify"
+    target: str
+    parameters: dict[str, Any] = Field(default_factory=dict)
+    requires_approval: bool = False
+    reversibility: str = "partial"
+    criticality: float = 0.0
+    category: str = "operations"
+    tags: list[str] = Field(default_factory=list)
+    active: bool = True
+    created_at: datetime = Field(default_factory=lambda: datetime.now(tz=UTC))
+
+
+class ToolCreateRequest(BaseModel):
+    tool_id: str
+    name: str
+    description: str
+    action_type: str = "notify"
+    target: str
+    parameters: dict[str, Any] = Field(default_factory=dict)
+    requires_approval: bool = False
+    reversibility: str = "partial"
+    criticality: float = 0.0
+    category: str = "operations"
+    tags: list[str] = Field(default_factory=list)
+    active: bool = True
+
+
 class AgentRunStatus(str, Enum):
     completed = "completed"
     blocked = "blocked"
@@ -105,6 +136,96 @@ class AgentRunSummary(BaseModel):
     completed_at: datetime
 
 
+class TaskRunStatus(str, Enum):
+    pending = "pending"
+    running = "running"
+    completed = "completed"
+    blocked = "blocked"
+    escalated = "escalated"
+    monitored = "monitored"
+    failed = "failed"
+
+
+class TaskTemplate(BaseModel):
+    task_id: str
+    name: str
+    description: str
+    agent_id: str
+    query: str
+    tool_id: str | None = None
+    packets_per_stream: int = 1
+    publish_realtime: bool = True
+    register_streams: bool = True
+    reasoning_state_overrides: dict[str, Any] = Field(default_factory=dict)
+    reasoning_history: list[dict[str, Any]] = Field(default_factory=list)
+    tags: list[str] = Field(default_factory=list)
+    active: bool = True
+    created_at: datetime = Field(default_factory=lambda: datetime.now(tz=UTC))
+
+
+class TaskCreateRequest(BaseModel):
+    task_id: str
+    name: str
+    description: str
+    agent_id: str
+    query: str
+    tool_id: str | None = None
+    packets_per_stream: int = 1
+    publish_realtime: bool = True
+    register_streams: bool = True
+    reasoning_state_overrides: dict[str, Any] = Field(default_factory=dict)
+    reasoning_history: list[dict[str, Any]] = Field(default_factory=list)
+    tags: list[str] = Field(default_factory=list)
+    active: bool = True
+
+
+class TaskRunRequest(BaseModel):
+    query: str | None = None
+    tool_id: str | None = None
+    packets_per_stream: int | None = None
+    publish_realtime: bool | None = None
+    register_streams: bool | None = None
+    reasoning_state_overrides: dict[str, Any] = Field(default_factory=dict)
+    reasoning_history: list[dict[str, Any]] = Field(default_factory=list)
+    window_center: datetime = Field(default_factory=lambda: datetime.now(tz=UTC))
+
+
+class TaskExecutionRecord(BaseModel):
+    execution_id: str
+    task_id: str
+    task_name: str
+    agent_id: str
+    agent_name: str
+    tool_id: str | None = None
+    status: TaskRunStatus
+    governance_action: str | None = None
+    started_at: datetime
+    completed_at: datetime | None = None
+    detail: str
+    state_history: list[dict[str, Any]] = Field(default_factory=list)
+    agent_run_id: str | None = None
+
+
+class TaskExecutionSummary(BaseModel):
+    execution_id: str
+    task_id: str
+    task_name: str
+    agent_id: str
+    agent_name: str
+    tool_id: str | None = None
+    status: TaskRunStatus
+    governance_action: str | None = None
+    started_at: datetime
+    completed_at: datetime | None = None
+    detail: str
+    agent_run_id: str | None = None
+
+
+class TaskRunResult(BaseModel):
+    task_execution: TaskExecutionRecord
+    agent_run: AgentRunResult | None = None
+
+
 class KernelPipelineRequest(BaseModel):
     query: str = "Assess current multimodal operating state"
     reasoning_mode: ReasoningMode = ReasoningMode.proactive
@@ -137,3 +258,4 @@ class KernelPipelineResult(BaseModel):
 
 
 AgentRunResult.model_rebuild()
+TaskRunResult.model_rebuild()

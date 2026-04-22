@@ -124,6 +124,46 @@
       ]
     }
   ],
+  "tools": [
+    {
+      "tool_id": "notify_supervisor",
+      "name": "Supervisor Notification",
+      "description": "Notify the shift supervisor with an operational summary.",
+      "category": "notification",
+      "created_at": "2026-04-21T19:08:30Z",
+      "tags": ["operations", "supervision"]
+    },
+    {
+      "tool_id": "page_incident_channel",
+      "name": "Incident Broadcast",
+      "description": "Notify the incident response channel with a structured triage output.",
+      "category": "notification",
+      "created_at": "2026-04-21T19:09:15Z",
+      "tags": ["incident-response", "triage"]
+    }
+  ],
+  "tasks": [
+    {
+      "task_id": "watch_line_three",
+      "name": "Watch Line Three",
+      "description": "Continuously assess multimodal signals for early signs of instability on assembly line three.",
+      "agent_id": "ops_supervisor",
+      "query": "Assess assembly line three for multimodal instability and escalate early risk patterns.",
+      "tool_id": "notify_supervisor",
+      "created_at": "2026-04-21T19:12:30Z",
+      "tags": ["operations", "monitoring"]
+    },
+    {
+      "task_id": "triage_active_incident",
+      "name": "Triage Active Incident",
+      "description": "Correlate current multimodal evidence and produce a safe incident routing decision.",
+      "agent_id": "incident_triage",
+      "query": "Explain the likely cause of the active incident and determine the safest governed next action.",
+      "tool_id": "page_incident_channel",
+      "created_at": "2026-04-21T19:13:20Z",
+      "tags": ["incident-response", "triage"]
+    }
+  ],
   "agent_runs": [
     {
       "run_id": "agr_pages_demo_01",
@@ -133,6 +173,21 @@
       "governance_action": "MONITOR",
       "started_at": "2026-04-21T19:14:50Z",
       "completed_at": "2026-04-21T19:14:59Z"
+    }
+  ],
+  "task_runs": [
+    {
+      "execution_id": "tskrun_pages_demo_01",
+      "task_id": "watch_line_three",
+      "task_name": "Watch Line Three",
+      "agent_id": "ops_supervisor",
+      "agent_name": "Operations Supervisor",
+      "tool_id": "notify_supervisor",
+      "status": "monitored",
+      "governance_action": "MONITOR",
+      "started_at": "2026-04-21T19:14:49Z",
+      "completed_at": "2026-04-21T19:14:59Z",
+      "detail": "Task completed via agent Operations Supervisor with governance action MONITOR."
     }
   ],
   "latest_action": {
