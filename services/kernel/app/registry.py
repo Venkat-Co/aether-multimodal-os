@@ -482,8 +482,22 @@ class AgentRegistry:
         review.resolution = request.resolution
         review.resolution_notes = request.resolution_notes
         review.reviewed_by = request.reviewed_by
+        review.reviewed_by_role = request.reviewed_by_role
+        review.review_source = request.review_source
         review.resolved_at = utc_now()
         review.updated_at = utc_now()
+        resolution_history = review.metadata.setdefault("resolution_history", [])
+        if isinstance(resolution_history, list):
+            resolution_history.append(
+                {
+                    "resolution": request.resolution,
+                    "resolution_notes": request.resolution_notes,
+                    "reviewed_by": request.reviewed_by,
+                    "reviewed_by_role": request.reviewed_by_role,
+                    "review_source": request.review_source,
+                    "resolved_at": review.resolved_at.isoformat() if review.resolved_at else None,
+                }
+            )
         return review
 
     def list_runs(self) -> list[AgentRunSummary]:

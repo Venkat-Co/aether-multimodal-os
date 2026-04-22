@@ -245,6 +245,7 @@ def test_agent_registry_builds_pipeline_request_from_definition() -> None:
                 )
             ],
             tags=["safety"],
+            created_by="operator_001",
         )
     )
 
@@ -257,6 +258,7 @@ def test_agent_registry_builds_pipeline_request_from_definition() -> None:
     assert request.packets_per_stream == 2
     assert request.streams[0].source_id == "camera_001"
     assert request.action_template.target == "safety_operations"
+    assert agent.created_by == "operator_001"
 
 
 def test_task_registry_builds_agent_request_from_task_template() -> None:
@@ -471,12 +473,17 @@ async def test_kernel_can_resolve_review_and_rerun_agent() -> None:
         ReviewResolveRequest(
             resolution="approved",
             reviewed_by="operator_001",
+            reviewed_by_role="shift_lead",
+            review_source="dashboard",
             rerun_source=True,
         ),
     )
 
     assert resolution.review.status.value == "resolved"
     assert resolution.review.reviewed_by == "operator_001"
+    assert resolution.review.reviewed_by_role == "shift_lead"
+    assert resolution.review.review_source == "dashboard"
+    assert resolution.review.metadata["resolution_history"][-1]["reviewed_by_role"] == "shift_lead"
     assert resolution.replay is not None
     assert resolution.replay.source_kind == "agent"
     assert resolution.replay.status == "completed"
@@ -545,10 +552,17 @@ async def test_kernel_persists_snapshot_after_review_resolution() -> None:
     result = await orchestrator.resolve_review(
         registry,
         review.review_id,
-        ReviewResolveRequest(resolution="approved", reviewed_by="operator_001"),
+        ReviewResolveRequest(
+            resolution="approved",
+            reviewed_by="operator_001",
+            reviewed_by_role="mission_controller",
+            review_source="dashboard",
+        ),
     )
 
     assert len(persistence.snapshots) >= 2
     assert persistence.snapshots[-1].reviews[0].status.value == "resolved"
     assert result.review.reviewed_by == "operator_001"
+    assert result.review.reviewed_by_role == "mission_controller"
+    assert result.review.review_source == "dashboard"
     await bus.close()

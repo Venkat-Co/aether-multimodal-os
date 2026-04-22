@@ -36,6 +36,7 @@
 
 ## Incident Handling
 
+- Review approvals can include `X-Aether-Operator`, `X-Aether-Operator-Role`, and `X-Aether-Review-Source` for operator attribution.
 - If governance blocks unexpectedly, inspect `GET /api/v1/governance/audit`.
 - If action dispatch fails repeatedly, inspect `GET /api/v1/actions/dead-letter`.
 - If the dashboard is stale, confirm the realtime gateway is reachable on port `8007`.

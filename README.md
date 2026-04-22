@@ -110,6 +110,8 @@ proto                       gRPC contracts
 3. Trigger the end-to-end demo loop with `make demo`, `./scripts/demo-local.sh`, or `./scripts/start-local.sh --demo`.
 4. Open the dashboard at `http://localhost:3000`.
    - The dashboard will auto-target the kernel review API at `http://localhost:8008` for local approval actions.
+   - The dashboard will also auto-target the realtime socket at `ws://localhost:8007` for local live state.
+   - Operator identity is editable in the top bar and is attached to review approvals for audit ownership.
 5. Open service docs:
    - Ingestion: `http://localhost:8001/docs`
    - Fusion: `http://localhost:8002/docs`
@@ -134,6 +136,7 @@ proto                       gRPC contracts
 - Local Docker Compose is prewired for Redis and Kafka through [.env.example](/Users/venkatreddymittapalli/Documents/Codex/2026-04-21-here-is-your-premium-end-to/.env.example)
 - Memory backend status is available at `GET /api/v1/memory/backends`
 - Kernel backend status is available at `GET /api/v1/kernel/backends`
+- Review actions can carry operator ownership through `X-Aether-Operator`, `X-Aether-Operator-Role`, and `X-Aether-Review-Source`
 - When the event bus is distributed, ingestion publishes packet events onto `streams` and fusion consumes them automatically before `fuse_window`
 - When PostgreSQL is available, the kernel stores a durable control-plane snapshot so agents, task runs, workflow runs, and review decisions are restored after restart
 

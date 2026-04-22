@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
 from aether_core.config import get_settings
@@ -51,6 +51,34 @@ registry = AgentRegistry(
     seed_tasks=build_default_tasks(),
     seed_workflows=build_default_workflows(),
 )
+
+
+def resolve_operator_name(request_value: str | None, header_value: str | None) -> str | None:
+    return header_value or request_value or None
+
+
+def enrich_creator_request(request_model, operator_name: str | None):
+    if operator_name is None or getattr(request_model, "created_by", None):
+        return request_model
+    return request_model.model_copy(update={"created_by": operator_name})
+
+
+def enrich_review_request(
+    request: ReviewResolveRequest,
+    operator_name: str | None,
+    operator_role: str | None,
+    review_source: str | None,
+) -> ReviewResolveRequest:
+    payload: dict[str, str] = {}
+    if request.reviewed_by is None and operator_name is not None:
+        payload["reviewed_by"] = operator_name
+    if request.reviewed_by_role is None and operator_role is not None:
+        payload["reviewed_by_role"] = operator_role
+    if request.review_source is None and review_source is not None:
+        payload["review_source"] = review_source
+    if not payload:
+        return request
+    return request.model_copy(update=payload)
 
 
 async def persist_runtime_state() -> None:
@@ -176,7 +204,11 @@ async def get_tool(tool_id: str) -> ToolDefinition:
 
 
 @app.post("/api/v1/kernel/tools", response_model=ToolDefinition)
-async def create_tool(request: ToolCreateRequest) -> ToolDefinition:
+async def create_tool(
+    request: ToolCreateRequest,
+    x_aether_operator: str | None = Header(default=None),
+) -> ToolDefinition:
+    request = enrich_creator_request(request, resolve_operator_name(request.created_by, x_aether_operator))
     tool = registry.create_tool(request)
     await persist_runtime_state()
     logger.info("Registered kernel tool", extra={"tool_id": tool.tool_id, "name": tool.name})
@@ -211,7 +243,14 @@ async def get_review(review_id: str) -> ReviewQueueItem:
 
 
 @app.post("/api/v1/kernel/reviews/{review_id}/resolve", response_model=ReviewResolveResult)
-async def resolve_review(review_id: str, request: ReviewResolveRequest) -> ReviewResolveResult:
+async def resolve_review(
+    review_id: str,
+    request: ReviewResolveRequest,
+    x_aether_operator: str | None = Header(default=None),
+    x_aether_operator_role: str | None = Header(default=None),
+    x_aether_review_source: str | None = Header(default=None),
+) -> ReviewResolveResult:
+    request = enrich_review_request(request, x_aether_operator, x_aether_operator_role, x_aether_review_source)
     try:
         result = await orchestrator.resolve_review(registry, review_id, request)
     except ValueError as exc:
@@ -226,6 +265,8 @@ async def resolve_review(review_id: str, request: ReviewResolveRequest) -> Revie
             "resolution": result.review.resolution,
             "rerun_source": request.rerun_source,
             "replay_run_id": result.replay.run_id if result.replay is not None else None,
+            "reviewed_by": result.review.reviewed_by,
+            "reviewed_by_role": result.review.reviewed_by_role,
         },
     )
     try:
@@ -239,7 +280,11 @@ async def resolve_review(review_id: str, request: ReviewResolveRequest) -> Revie
 
 
 @app.post("/api/v1/kernel/agents", response_model=AgentDefinition)
-async def create_agent(request: AgentCreateRequest) -> AgentDefinition:
+async def create_agent(
+    request: AgentCreateRequest,
+    x_aether_operator: str | None = Header(default=None),
+) -> AgentDefinition:
+    request = enrich_creator_request(request, resolve_operator_name(request.created_by, x_aether_operator))
     agent = registry.create_agent(request)
     await persist_runtime_state()
     logger.info("Registered kernel agent", extra={"agent_id": agent.agent_id, "name": agent.name})
@@ -291,7 +336,11 @@ async def list_task_runs() -> list[TaskExecutionSummary]:
 
 
 @app.post("/api/v1/kernel/tasks", response_model=TaskTemplate)
-async def create_task(request: TaskCreateRequest) -> TaskTemplate:
+async def create_task(
+    request: TaskCreateRequest,
+    x_aether_operator: str | None = Header(default=None),
+) -> TaskTemplate:
+    request = enrich_creator_request(request, resolve_operator_name(request.created_by, x_aether_operator))
     if registry.get_agent(request.agent_id) is None:
         raise HTTPException(status_code=404, detail=f"Agent '{request.agent_id}' not found")
     if request.tool_id is not None and registry.get_tool(request.tool_id) is None:
@@ -347,7 +396,11 @@ async def list_workflow_runs() -> list[WorkflowExecutionSummary]:
 
 
 @app.post("/api/v1/kernel/workflows", response_model=WorkflowTemplate)
-async def create_workflow(request: WorkflowCreateRequest) -> WorkflowTemplate:
+async def create_workflow(
+    request: WorkflowCreateRequest,
+    x_aether_operator: str | None = Header(default=None),
+) -> WorkflowTemplate:
+    request = enrich_creator_request(request, resolve_operator_name(request.created_by, x_aether_operator))
     referenced_task_ids = [step.task_id for step in request.steps] if request.steps else request.task_ids
     if not referenced_task_ids:
         raise HTTPException(status_code=400, detail="Workflow must reference at least one task")

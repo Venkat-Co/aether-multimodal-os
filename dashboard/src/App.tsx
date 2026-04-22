@@ -59,6 +59,12 @@ type StreamRowModel = {
   tone: Tone;
 };
 
+type OperatorProfile = {
+  name: string;
+  role: string;
+  source: string;
+};
+
 const initialState: DashboardState = {
   generated_at: new Date().toISOString(),
   status: "connecting",
@@ -75,6 +81,13 @@ const initialState: DashboardState = {
   workflows: [],
   workflow_runs: [],
   reviews: [],
+};
+
+const operatorStorageKey = "aether.operator.profile";
+const defaultOperatorProfile: OperatorProfile = {
+  name: "operator_001",
+  role: "mission_controller",
+  source: "dashboard",
 };
 
 const orbitalNodes: Array<{ position: [number, number, number]; color: string; scale: number }> = [
@@ -162,6 +175,23 @@ function workflowBranchCount(item: Record<string, unknown>): number {
 
   const rootSteps = steps.filter((step) => listValue(step["depends_on"]).length === 0).length;
   return Math.max(rootSteps, 1);
+}
+
+function loadOperatorProfile(): OperatorProfile {
+  try {
+    const raw = window.localStorage.getItem(operatorStorageKey);
+    if (!raw) {
+      return defaultOperatorProfile;
+    }
+    const parsed = JSON.parse(raw) as Partial<OperatorProfile>;
+    return {
+      name: textValue(parsed.name) ?? defaultOperatorProfile.name,
+      role: textValue(parsed.role) ?? defaultOperatorProfile.role,
+      source: textValue(parsed.source) ?? defaultOperatorProfile.source,
+    };
+  } catch {
+    return defaultOperatorProfile;
+  }
 }
 
 function truncateText(value: string, maxLength: number): string {
@@ -605,6 +635,10 @@ function summarizeReviewItem(item: Record<string, unknown>, nowMs: number): Insi
   const replayRecord = asRecord(replay);
   const resolution = textValue(item["resolution"]);
   const reviewedBy = textValue(item["reviewed_by"]);
+  const reviewedByRole = textValue(item["reviewed_by_role"]);
+  const reviewSource = textValue(item["review_source"]);
+  const reviewerLabel =
+    reviewedBy && reviewedByRole ? `${reviewedBy} · ${humanizeToken(reviewedByRole)}` : reviewedBy ?? reviewedByRole;
   const tone: Tone =
     status === "resolved"
       ? "mint"
@@ -617,16 +651,19 @@ function summarizeReviewItem(item: Record<string, unknown>, nowMs: number): Insi
     title: textValue(item["title"]) ?? textValue(item["source_name"]) ?? "Review queue item",
     summary: truncateText(
       resolution
-        ? `${textValue(item["summary"]) ?? "Human review captured."} Resolution ${humanizeToken(resolution)}${reviewedBy ? ` by ${reviewedBy}` : ""}.`
+        ? `${textValue(item["summary"]) ?? "Human review captured."} Resolution ${humanizeToken(resolution)}${reviewerLabel ? ` by ${reviewerLabel}` : ""}.`
         : textValue(item["summary"]) ?? "Human review is required before continuing the operator loop.",
       112,
     ),
     meta: [
       textValue(item["review_id"]) ?? "review",
       `Risk ${riskLevel}`,
+      reviewerLabel ? `Owner ${reviewerLabel}` : `Trigger ${humanizeToken(triggerStatus)}`,
       replayRecord && Object.keys(replayRecord).length > 0
         ? `Replay ${humanizeToken(textValue(replayRecord["status"]) ?? "queued")}`
-        : `Trigger ${humanizeToken(triggerStatus)}`,
+        : reviewSource
+          ? `Source ${humanizeToken(reviewSource)}`
+          : `Trigger ${humanizeToken(triggerStatus)}`,
     ],
     tone,
     timestamp: formatClock(item["resolved_at"] ?? item["created_at"]),
@@ -793,6 +830,11 @@ function resolveSocketBase(): string | undefined {
   const envValue = import.meta.env.VITE_WS_URL;
   if (typeof envValue === "string" && envValue.trim().length > 0) {
     return normalizeSocketBase(envValue.trim());
+  }
+
+  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
+    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+    return `${protocol}//${window.location.hostname}:8007`;
   }
 
   return undefined;
@@ -989,6 +1031,45 @@ function EmptyState({ title, body }: { title: string; body: string }) {
   );
 }
 
+function OperatorConsole({
+  profile,
+  onChange,
+}: {
+  profile: OperatorProfile;
+  onChange: (field: keyof OperatorProfile, value: string) => void;
+}) {
+  return (
+    <div className="operator-console">
+      <div className="operator-console-copy">
+        <span>Operator Identity</span>
+        <strong>{profile.name}</strong>
+      </div>
+      <div className="operator-console-grid">
+        <label className="operator-field">
+          <span>Callsign</span>
+          <input
+            className="operator-input"
+            type="text"
+            value={profile.name}
+            onChange={(event) => onChange("name", event.target.value)}
+            placeholder="operator_001"
+          />
+        </label>
+        <label className="operator-field">
+          <span>Role</span>
+          <input
+            className="operator-input"
+            type="text"
+            value={profile.role}
+            onChange={(event) => onChange("role", event.target.value)}
+            placeholder="mission_controller"
+          />
+        </label>
+      </div>
+    </div>
+  );
+}
+
 function ReviewQueueCard({
   item,
   nowMs,
@@ -1055,7 +1136,7 @@ function ReviewQueueCard({
       ) : null}
       {actionMessage ? <div className="review-action-message">{actionMessage}</div> : null}
       {!canResolve && isPending ? (
-        <div className="review-action-message">Review actions require a live kernel API.</div>
+        <div className="review-action-message">Review actions require a live kernel API and an operator identity.</div>
       ) : null}
     </article>
   );
@@ -1064,6 +1145,7 @@ function ReviewQueueCard({
 export default function App() {
   const { state, socketStatus, nowMs } = useDashboardState();
   const apiBase = resolveApiBase();
+  const [operatorProfile, setOperatorProfile] = useState<OperatorProfile>(() => loadOperatorProfile());
   const [reviewActionState, setReviewActionState] = useState<Record<string, string>>({});
   const [reviewActionMessage, setReviewActionMessage] = useState<Record<string, string>>({});
   const [reviewOverrides, setReviewOverrides] = useState<Record<string, Record<string, unknown>>>({});
@@ -1098,9 +1180,21 @@ export default function App() {
   const latestResult = asRecord(latestAction["result"]);
   const activeModalities = Array.from(new Set(streamDirectory.map((stream) => stream.modality)));
   const socketTone = toneForSocketStatus(socketStatus);
-  const canResolveReviews = Boolean(apiBase) && socketStatus !== "demo" && socketStatus !== "offline";
+  const hasOperatorIdentity = operatorProfile.name.trim().length > 0;
+  const canResolveReviews = Boolean(apiBase) && socketStatus !== "demo" && socketStatus !== "offline" && hasOperatorIdentity;
   const latestFusionConfidence = normalizeConfidence(numberValue(asRecord(state.fusion[state.fusion.length - 1])["confidence"]));
   const latestDecisionAction = textValue(latestDecision["action_taken"])?.toUpperCase() ?? "ALLOW";
+
+  useEffect(() => {
+    window.localStorage.setItem(operatorStorageKey, JSON.stringify(operatorProfile));
+  }, [operatorProfile]);
+
+  function handleOperatorChange(field: keyof OperatorProfile, value: string): void {
+    setOperatorProfile((current) => ({
+      ...current,
+      [field]: value.trim().length > 0 ? value.trim() : field === "source" ? defaultOperatorProfile.source : "",
+    }));
+  }
 
   async function handleResolveReview(reviewId: string, resolution: string, rerunSource: boolean): Promise<void> {
     if (!apiBase) {
@@ -1114,10 +1208,17 @@ export default function App() {
     try {
       const response = await fetch(`${apiBase}/api/v1/kernel/reviews/${reviewId}/resolve`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          "X-Aether-Operator": operatorProfile.name,
+          "X-Aether-Operator-Role": operatorProfile.role,
+          "X-Aether-Review-Source": operatorProfile.source,
+        },
         body: JSON.stringify({
           resolution,
-          reviewed_by: "dashboard_operator",
+          reviewed_by: operatorProfile.name,
+          reviewed_by_role: operatorProfile.role,
+          review_source: operatorProfile.source,
           rerun_source: rerunSource,
         }),
       });
@@ -1137,7 +1238,9 @@ export default function App() {
       }
       setReviewActionMessage((current) => ({
         ...current,
-        [reviewId]: rerunSource ? "Approved and replayed through the runtime." : `Marked ${humanizeToken(resolution)}.`,
+        [reviewId]: rerunSource
+          ? `Approved by ${operatorProfile.name} and replayed through the runtime.`
+          : `Marked ${humanizeToken(resolution)} by ${operatorProfile.name}.`,
       }));
     } catch {
       setReviewActionMessage((current) => ({
@@ -1207,6 +1310,7 @@ export default function App() {
 
         <div className="topbar-tray">
           <StatusBadge label={socketStatus} tone={socketTone} />
+          <OperatorConsole profile={operatorProfile} onChange={handleOperatorChange} />
           <div className="micro-panel">
             <span>Realtime Sync</span>
             <strong>{formatRelativeTime(state.generated_at, nowMs)}</strong>
@@ -1230,6 +1334,8 @@ export default function App() {
 
             <div className="hero-ribbon">
               <span className="inline-pill">Kernel {humanizeToken(state.status)}</span>
+              <span className="inline-pill">Operator {operatorProfile.name}</span>
+              <span className="inline-pill">Role {humanizeToken(operatorProfile.role)}</span>
               <span className="inline-pill">Modalities {activeModalities.length}</span>
               <span className="inline-pill">Agents {state.agents.length}</span>
               <span className="inline-pill">Tasks {state.tasks.length}</span>

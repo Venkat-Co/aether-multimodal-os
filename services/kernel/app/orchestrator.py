@@ -159,6 +159,8 @@ class KernelOrchestrator:
                 "review_id": resolved_review.review_id,
                 "resolution": resolved_review.resolution,
                 "reviewed_by": resolved_review.reviewed_by,
+                "reviewed_by_role": resolved_review.reviewed_by_role,
+                "review_source": resolved_review.review_source,
                 "rerun_source": request.rerun_source,
                 "replay_run_id": replay.run_id if replay is not None else None,
             },

@@ -49,6 +49,7 @@ class ToolDefinition(BaseModel):
     category: str = "operations"
     tags: list[str] = Field(default_factory=list)
     active: bool = True
+    created_by: str | None = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(tz=UTC))
 
 
@@ -65,6 +66,7 @@ class ToolCreateRequest(BaseModel):
     category: str = "operations"
     tags: list[str] = Field(default_factory=list)
     active: bool = True
+    created_by: str | None = None
 
 
 class AgentRunStatus(str, Enum):
@@ -87,6 +89,7 @@ class AgentDefinition(BaseModel):
     tools: list[ToolBinding] = Field(default_factory=list)
     tags: list[str] = Field(default_factory=list)
     active: bool = True
+    created_by: str | None = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(tz=UTC))
 
 
@@ -102,6 +105,7 @@ class AgentCreateRequest(BaseModel):
     tools: list[ToolBinding] = Field(default_factory=list)
     tags: list[str] = Field(default_factory=list)
     active: bool = True
+    created_by: str | None = None
 
 
 class AgentRunRequest(BaseModel):
@@ -160,6 +164,7 @@ class TaskTemplate(BaseModel):
     reasoning_history: list[dict[str, Any]] = Field(default_factory=list)
     tags: list[str] = Field(default_factory=list)
     active: bool = True
+    created_by: str | None = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(tz=UTC))
 
 
@@ -177,6 +182,7 @@ class TaskCreateRequest(BaseModel):
     reasoning_history: list[dict[str, Any]] = Field(default_factory=list)
     tags: list[str] = Field(default_factory=list)
     active: bool = True
+    created_by: str | None = None
 
 
 class TaskRunRequest(BaseModel):
@@ -254,6 +260,7 @@ class WorkflowTemplate(BaseModel):
     )
     tags: list[str] = Field(default_factory=list)
     active: bool = True
+    created_by: str | None = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(tz=UTC))
 
 
@@ -268,6 +275,7 @@ class WorkflowCreateRequest(BaseModel):
     )
     tags: list[str] = Field(default_factory=list)
     active: bool = True
+    created_by: str | None = None
 
 
 class WorkflowRunRequest(BaseModel):
@@ -339,12 +347,16 @@ class ReviewQueueItem(BaseModel):
     resolution: str | None = None
     resolution_notes: str | None = None
     reviewed_by: str | None = None
+    reviewed_by_role: str | None = None
+    review_source: str | None = None
 
 
 class ReviewResolveRequest(BaseModel):
     resolution: str = "approved"
     resolution_notes: str | None = None
     reviewed_by: str | None = None
+    reviewed_by_role: str | None = None
+    review_source: str | None = None
     rerun_source: bool = False
     publish_realtime: bool = True
 
